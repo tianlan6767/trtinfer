@@ -128,11 +128,13 @@ struct DetResult
     std::vector<object::KeyPoint> keypoints;
     cv::Mat seg;
     object::OBBox obb;
+    object::ClsAttribute cls;
+
 };
 
-class TrtSahi{
+class TrtInfer{
 public:
-    TrtSahi(
+    TrtInfer(
         const std::string &model_path,
         ModelType model_type,
         const std::vector<std::string> &names,
@@ -251,6 +253,19 @@ public:
                     }
                 }
                 // else { /* Handle other types or std::monostate if present in InferResult */ }
+                else if constexpr (std::is_same_v<CurrentBatchResultType, object::ClsResultArray>)
+                {   
+                    // cout << "Processing ClsResultArray for batch of size: " << arg_batch_results.size() << endl;
+                    // arg_batch_results is object::ClsResultArray (i.e., std::vector<object::ClsAttribute>)
+                    for (int i = 0; i < num_images_in_batch; ++i)
+                    {
+                        if (i >= arg_batch_results.size()) continue;
+
+                        DetResult cls_item;
+                        cls_item.cls = arg_batch_results[i];  // 每张图片一个 ClsAttribute
+                        final_det_results[i].push_back(cls_item);
+                    }
+                }
             },
             variant_batch_results
         );
@@ -269,7 +284,8 @@ private:
 };
 
 
-PYBIND11_MODULE(trtsahi, m){
+
+PYBIND11_MODULE(tinfer, m){
     py::enum_<ModelType>(m, "ModelType")
         .value("YOLOV5", ModelType::YOLOV5)
         .value("YOLO11", ModelType::YOLO11)
@@ -281,6 +297,7 @@ PYBIND11_MODULE(trtsahi, m){
         .value("YOLO11POSESAHI", ModelType::YOLO11POSESAHI)
         .value("YOLO11SEGSAHI", ModelType::YOLO11SEGSAHI)
         .value("YOLO11OBBSAHI", ModelType::YOLO11OBBSAHI)
+        .value("CLS", ModelType::CLS)
         .export_values();
 
     py::class_<object::Box>(m, "Box")
@@ -333,13 +350,27 @@ PYBIND11_MODULE(trtsahi, m){
                 << ")";
             return oss.str();
         });
+    
+    py::class_<object::ClsAttribute>(m, "ClsAttribute")
+        .def_readwrite("class_id", &object::ClsAttribute::id)
+        .def_readwrite("score", &object::ClsAttribute::score)
+        .def("__repr__", [](const object::ClsAttribute &cls_attr) {
+            std::ostringstream oss;
+            oss << "ClsAttribute(class_id: " << cls_attr.id
+                << ", score: " << cls_attr.score
+                << ")";
+            return oss.str();
+        });
+    
     py::class_<DetResult>(m, "DetResult")
         .def_readwrite("box", &DetResult::box)
         .def_readwrite("keypoints", &DetResult::keypoints)
         .def_readwrite("seg", &DetResult::seg)
-        .def_readwrite("obb", &DetResult::obb);
-
-    py::class_<TrtSahi>(m, "TrtSahi")
+        .def_readwrite("obb", &DetResult::obb)
+        .def_readwrite("cls", &DetResult::cls);
+    
+    
+    py::class_<TrtInfer>(m, "TrtInfer")
         .def(py::init<string, ModelType, vector<string>, int, float, float, int, bool, int, int, double, double>(),
             py::arg("model_path"),
             py::arg("model_type"),
@@ -353,6 +384,6 @@ PYBIND11_MODULE(trtsahi, m){
             py::arg("slice_height"),
             py::arg("slice_horizontal_ratio"),
             py::arg("slice_vertical_ratio"))
-    .def_property_readonly("valid", &TrtSahi::valid)
-    .def("forwards", &TrtSahi::forwards, py::arg("images"));
+    .def_property_readonly("valid", &TrtInfer::valid)
+    .def("forwards", &TrtInfer::forwards, py::arg("images"));
 };
