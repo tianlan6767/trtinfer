@@ -9,6 +9,7 @@
 #include "trt/infer.hpp"
 #include "kernels/kernel_warp.hpp"
 #include <memory>
+#include "common/trt_tensor.hpp"
 
 
 #if NV_TENSORRT_MAJOR >= 10
@@ -54,6 +55,7 @@ public:
     {
         size_t input_numel = network_input_width_ * network_input_height_ * 3;
         input_buffer_.gpu(batch_size * input_numel);
+        input_buffer_.cpu(batch_size * input_numel);
         output_array_.gpu(batch_size * num_classes_);
         output_array_.cpu(batch_size * num_classes_);
         classes_indices_.cpu(batch_size);
@@ -71,11 +73,15 @@ public:
 
     void preprocess(int ibatch, const tensor::Image &image,
         std::shared_ptr<tensor::Memory<unsigned char>> preprocess_buffer_,
-        affine::ResizeMatrix &affine,
+        affine::CropResizeMatrix &affine,
         void *stream = nullptr)
     {
-        affine.compute(std::make_tuple(image.width, image.height),
-                       std::make_tuple(network_input_width_, network_input_height_));
+        int crop_size = std::min(image.width, image.height);
+        int start_x   = (image.width  - crop_size) / 2;
+        int start_y   = (image.height - crop_size) / 2;
+        affine.compute(std::make_tuple(crop_size, crop_size),
+                       std::make_tuple(network_input_width_, network_input_height_),
+                       std::make_tuple(start_x, start_y)); 
         size_t input_numel = network_input_height_ * network_input_width_ * 3;
         float *input_device = input_buffer_.gpu() + ibatch * input_numel;
         size_t size_image = image.width * image.height * 3;
@@ -87,6 +93,7 @@ public:
 
         cudaStream_t stream_ = (cudaStream_t)stream;
         memcpy(image_host, image.bgrptr, size_image);
+        // memcpy(image_cpu, image.bgrptr, size_image);
         memcpy(affine_metrix_host, affine.d2i, sizeof(affine.d2i));
 
         checkRuntime(cudaMemcpyAsync(image_device, image_host, size_image, cudaMemcpyHostToDevice, stream_));
@@ -104,7 +111,6 @@ public:
             normalize_,
             stream_
         );
-
     }
 
     virtual InferResult forwards(const std::vector<cv::Mat> &inputs, void *stream = nullptr);

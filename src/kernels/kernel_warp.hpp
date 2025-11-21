@@ -167,4 +167,6 @@ void decode_dfine_plan(
     );
 
 void classifer_softmax(float* predict, int length, int *max_index, cudaStream_t stream);
+
+void classifer_max(float* predict, int length, int *max_index, cudaStream_t stream);
 #endif

@@ -110,4 +110,7 @@ void BaseMemory::release()
     release_gpu();
 }
 
+
+
+
 } // namespace tensor

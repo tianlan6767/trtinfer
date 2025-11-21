@@ -6,6 +6,11 @@
 #include <string>
 #include <vector>
 
+struct CUstream_st;
+typedef CUstream_st CUStreamRaw;
+
+#define CURRENT_DEVICE_ID           -1
+
 namespace tensor
 {
 
@@ -56,6 +61,6 @@ template <typename _DT> class Memory : public BaseMemory
     virtual inline _DT *cpu() const { return (_DT *)cpu_; }
 };
 
-} // namespace tensor
+}; // namespace tensor
 
 #endif

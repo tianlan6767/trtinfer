@@ -3,6 +3,7 @@
 #include "common/image.hpp"
 #include "kernels/kernel_warp.hpp"
 #include "trt/yolo/yolo11seg.hpp"
+#include "common/trt_tensor.hpp"
 
 static __host__ __device__ void affine_project(float *matrix, float x, float y, float *ox, float *oy)
 {
@@ -47,6 +48,7 @@ void Yolo11SegModelImpl::adjust_memory(int batch_size)
 {
     size_t input_numel = network_input_width_ * network_input_height_ * 3;
     input_buffer_.gpu(batch_size * input_numel);
+    input_buffer_.cpu(batch_size * input_numel);
     bbox_predict_.gpu(batch_size * bbox_head_dims_[1] * bbox_head_dims_[2]);
     segment_predict_.gpu(batch_size * segment_head_dims_[1] * segment_head_dims_[2] * segment_head_dims_[3]);
     output_boxarray_.gpu(batch_size * (max_image_boxes_ * num_box_element_));
@@ -267,6 +269,23 @@ InferResult Yolo11SegModelImpl::forwards(const std::vector<cv::Mat> &inputs, voi
     }
     float *bbox_output_device    = bbox_predict_.gpu();
     float *segment_output_device = segment_predict_.gpu();
+
+    // checkRuntime(cudaMemcpyAsync(input_buffer_.cpu(),
+    //                              input_buffer_.gpu(),
+    //                              input_buffer_.gpu_bytes(),
+    //                              cudaMemcpyDeviceToHost,
+    //                              stream_));
+    // // cudaStreamSynchronize(stream_);
+
+    // auto input_buffer_cpu = input_buffer_.cpu();
+
+
+    // TRT::Tensor input_tmp_device(TRT::DataType::Float);
+    // input_tmp_device.resize(3, network_input_height_, network_input_width_);
+    // float* input_tmp_device_ptr = input_tmp_device.gpu<float>();
+    // checkRuntime(cudaMemcpyAsync(input_tmp_device_ptr, input_buffer_cpu, input_buffer_.cpu_bytes(), cudaMemcpyHostToDevice, stream_));
+                                
+    // input_tmp_device.save_to_file("seg_output_" + std::to_string(0) + ".bin");
 
 #if NV_TENSORRT_MAJOR >= 10
     // yolov5 模型推理

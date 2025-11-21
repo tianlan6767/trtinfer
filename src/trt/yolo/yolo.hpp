@@ -101,6 +101,7 @@ class YoloModelImpl : public InferBase
     {
         size_t input_numel = network_input_width_ * network_input_height_ * 3;
         input_buffer_.gpu(batch_size * input_numel);
+        input_buffer_.cpu(batch_size * input_numel);
         bbox_predict_.gpu(batch_size * bbox_head_dims_[1] * bbox_head_dims_[2]);
     
         output_boxarray_.gpu(batch_size * (max_image_boxes_ * (num_box_element_ + (num_key_point_ * 3))));

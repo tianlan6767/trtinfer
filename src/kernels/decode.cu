@@ -594,4 +594,43 @@ __global__ void softmax_kernel(float* predict, int length, int *max_index)
 
 }
 
+
+__global__ void max_kernel(float* predict, int length, int *max_index)
+{
+    extern __shared__ float shared_data[];
+    float *shared_max_vals = shared_data;
+    int *shared_max_indices = (int*)&shared_max_vals[blockDim.x];
+
+    int tid = threadIdx.x;
+
+    // 1. 找出最大值和最大值的下标，并存储在共享内存中
+    float max_val = -FLT_MAX;
+    int max_idx = -1;
+    for(int i=tid; i < length; i +=blockDim.x)
+    {
+        if (predict[i] > max_val)
+        {
+            max_val = predict[i];
+            max_idx = i;
+        }
+    }
+    shared_max_vals[tid] = max_val;
+    shared_max_indices[tid] = max_idx;
+    __syncthreads();
+
+    // 2. 归约操作，找出全局最大值和对应的下标
+    if (tid ==0)
+    {
+        for (int i=1; i< blockDim.x; i++)
+        {
+            if (shared_max_vals[i] > shared_max_vals[0])
+            {
+                shared_max_indices[0] = shared_max_indices[i];
+                shared_max_vals[0] = shared_max_vals[i];
+            }
+        }
+        *max_index = shared_max_indices[0];
+    }
+}
+
 } // namespace cuda

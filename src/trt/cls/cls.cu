@@ -2,6 +2,7 @@
 #include "common/check.hpp"
 #include "kernels/kernel_warp.hpp"
 #include "trt/cls/cls.hpp"
+#include "common/trt_tensor.hpp"
 
 
 namespace Cls
@@ -31,6 +32,13 @@ bool ClsModelImpl::load(const std::string &engine_file,
     network_input_height_ = input_dims[2];
     network_input_width_  = input_dims[3];
     normalize_ = norm_image::Norm::alpha_beta(1 / 255.0f, 0.0f, norm_image::ChannelType::SwapRB);
+    // static float mean[3] = {0.0f, 0.0f, 0.0f};
+    // static float stdv[3] = {1.0f, 1.0f, 1.0f};
+    // normalize_ = norm_image::Norm::mean_std(
+    //     mean,
+    //     stdv,
+    //     1 / 255.0f,
+    //     norm_image::ChannelType::SwapRB);
     num_classes_ = trt_->static_dims(1)[1];
     return true;
 }
@@ -66,7 +74,7 @@ InferResult ClsModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *str
     // 分配存储空间
     adjust_memory(infer_batch_size);
 
-    std::vector<affine::ResizeMatrix> affine_matrixs(infer_batch_size);
+    std::vector<affine::CropResizeMatrix> affine_matrixs(infer_batch_size);
 
     // 预处理
     cudaStream_t stream_ = (cudaStream_t)stream;
@@ -80,6 +88,23 @@ InferResult ClsModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *str
     }
 
     float *output_array_device = output_array_.gpu();
+
+    // // 保存输入张量到文件，便于调试
+    // checkRuntime(cudaMemcpyAsync(input_buffer_.cpu(),
+    //                             input_buffer_.gpu(),
+    //                             input_buffer_.gpu_bytes(),
+    //                             cudaMemcpyDeviceToHost,
+    //                             stream_));
+    // // cudaStreamSynchronize(stream_);
+
+    // auto input_buffer_cpu = input_buffer_.cpu();
+
+
+    // TRT::Tensor input_tmp_device(TRT::DataType::Float);
+    // input_tmp_device.resize(3, network_input_height_, network_input_width_);
+    // float* input_tmp_device_ptr = input_tmp_device.gpu<float>();
+    // checkRuntime(cudaMemcpyAsync(input_tmp_device_ptr, input_buffer_cpu, input_buffer_.cpu_bytes(), cudaMemcpyHostToDevice, stream_));
+    // input_tmp_device.save_to_file("cls_input_buffer_" + std::to_string(0) + ".bin");
 
 #if NV_TENSORRT_MAJOR >= 10
     std::unordered_map<std::string, const void *> bindings = {
@@ -98,13 +123,18 @@ InferResult ClsModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *str
     }
 #endif
     for (int ib = 0; ib < infer_batch_size; ++ib)
-    {
+    {   
+        // TRT::Tensor output_tmp_device(TRT::DataType::Float);
+        // output_tmp_device.resize(num_classes_);
+        // float* output_tmp_device_ptr = output_tmp_device.gpu<float>();
+        // checkRuntime(cudaMemcpyAsync(output_tmp_device_ptr, output_array_.gpu() + ib * num_classes_, num_classes_ * sizeof(float), cudaMemcpyDeviceToDevice, stream_));
+        // output_tmp_device.save_to_file("cls_infer_output_" + std::to_string(ib) + ".bin");
         float *output_array_device = output_array_.gpu() + ib * num_classes_;
         int *classes_indices_device = classes_indices_.gpu() + ib;
-        classifer_softmax(output_array_device,
-                          num_classes_,
-                          classes_indices_device,
-                          stream_);
+        classifer_max(output_array_device,
+                        num_classes_,
+                        classes_indices_device,
+                        stream_);
     }
 
     checkRuntime(cudaMemcpyAsync(output_array_.cpu(),
@@ -127,7 +157,6 @@ InferResult ClsModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *str
         int *max_index = classes_indices_.cpu() + ib;
         int index = *max_index;
         float max_score = output_array_cpu[index];
-        // arrout[ib] = object::ClsAttribute(max_score, index);
         arrout.emplace_back(max_score, index);
     }
     return arrout;

@@ -369,3 +369,10 @@ void classifer_softmax(float* predict, int length, int *max_index, cudaStream_t 
     auto block = block_dims(length);
     checkKernel(cuda::softmax_kernel<<<grid, block, block.x * sizeof(float), stream>>>(predict, length, max_index));
 }
+
+void classifer_max(float* predict, int length, int *max_index, cudaStream_t stream)
+{
+    auto grid = grid_dims(length);
+    auto block = block_dims(length);
+    checkKernel(cuda::max_kernel<<<grid, block, block.x * (sizeof(float)+sizeof(int)), stream>>>(predict, length, max_index));
+}
