@@ -158,6 +158,7 @@ InferResult ClsModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *str
         int index = *max_index;
         float max_score = output_array_cpu[index];
         arrout.emplace_back(max_score, index);
+        // std::cout << "Cls result: image " << ib << ", class id: " << index << ", score: " << max_score << std::endl;
     }
     return arrout;
 }
