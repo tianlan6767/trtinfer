@@ -1,5 +1,5 @@
 cc        := g++
-name      := trtsahi.so
+name      := tinfer.so
 workdir   := workspace
 srcdir    := src
 objdir    := objs
@@ -15,7 +15,7 @@ trt_include_path     := /home/ps/workspace/trt/lean/TensorRT-10.11.0.33/include
 cuda_include_path    := $(cuda_home)/include
 ffmpeg_include_path  := 
 
-python_include_path  := /usr/include/python3.10
+python_include_path  := /usr/local/include/python3.12
 
 
 include_paths        := $(project_include_path) \
@@ -28,7 +28,8 @@ include_paths        := $(project_include_path) \
 opencv_library_path  := /home/ps/workspace/trt/lean/cv/lib
 trt_library_path     := /home/ps/workspace/trt/lean/TensorRT-10.11.0.33/lib/
 cuda_library_path    := $(cuda_home)/lib64/
-python_library_path  := /usr/lib/x86_64-linux-gnu
+# python_library_path  := /usr/lib/x86_64-linux-gnu
+python_library_path  := usr/local/lib/python3.12/config-3.12-x86_64-linux-gnu
 
 library_paths        := $(opencv_library_path) \
 						$(trt_library_path) \
