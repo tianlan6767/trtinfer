@@ -14,9 +14,11 @@ bool Yolov5SahiModelImpl::load(const std::string &engine_file,
                                int slice_height,
                                double slice_horizontal_ratio,
                                double slice_vertical_ratio)
-{
-    trt_       = TensorRT::load(engine_file);
+{   
     device_id_ = gpu_id;
+    auto device_guard = this->get_device();  // 保证 device 正确
+    trt_       = TensorRT::load(engine_file);
+
     if (trt_ == nullptr)
         return false;
 
@@ -51,6 +53,8 @@ bool Yolov5SahiModelImpl::load(const std::string &engine_file,
 InferResult Yolov5SahiModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *stream)
 {
     assert(inputs.size() == 1);
+    auto device_guard = this->get_device();  // 保证 device 正确   
+    auto stream_ = this->get_stream((cudaStream_t)stream);
 
     if (auto_slice_)
     {
@@ -63,7 +67,7 @@ InferResult Yolov5SahiModelImpl::forwards(const std::vector<cv::Mat> &inputs, vo
                       slice_height_,
                       slice_horizontal_ratio_,
                       slice_vertical_ratio_,
-                      stream);
+                      stream_);
     }
 
     int num_image          = slice_->slice_num_h_ * slice_->slice_num_v_;
@@ -99,11 +103,10 @@ InferResult Yolov5SahiModelImpl::forwards(const std::vector<cv::Mat> &inputs, vo
 
     // 每一张小图的尺寸都是一致的，所以只需要取计算一次仿射矩阵
     affine::LetterBoxMatrix affine_matrix;
-    cudaStream_t stream_ = (cudaStream_t)stream;
     compute_affine_matrix(affine_matrix, stream_);
     for (int i = 0; i < num_image; ++i)
     {
-        preprocess(i, stream);
+        preprocess(i, stream_);
     }
 
     float *bbox_output_device = bbox_predict_.gpu();

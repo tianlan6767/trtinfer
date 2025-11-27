@@ -57,7 +57,7 @@ class YoloSahiModelImpl : public InferBase
     int max_batch_size_;
 
     int num_classes_ = 0;
-    int device_id_   = 0;
+    // int device_id_   = 0;
 
     int num_box_element_ = 9;
     int num_key_point_   = 0;
@@ -88,7 +88,7 @@ class YoloSahiModelImpl : public InferBase
         uint8_t *image_device       = slice_->output_images_.gpu() + ibatch * size_image;
 
         // speed up
-        cudaStream_t stream_ = (cudaStream_t)stream;
+        cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
 
         warp_affine_bilinear_and_normalize_plane(image_device,
                                                 slice_->slice_width_ * 3,
@@ -134,7 +134,8 @@ class YoloSahiModelImpl : public InferBase
         float *inverse_affine_matrix_device = inverse_affine_matrix_.gpu();
         float *inverse_affine_matrix_host   = inverse_affine_matrix_.cpu();
 
-        cudaStream_t stream_ = (cudaStream_t)stream;
+        cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
+        
         memcpy(affine_matrix_host, affine.d2i, sizeof(affine.d2i));
         checkRuntime(
         cudaMemcpyAsync(affine_matrix_device, affine_matrix_host, sizeof(affine.d2i), cudaMemcpyHostToDevice, stream_));

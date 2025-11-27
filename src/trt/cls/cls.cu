@@ -8,18 +8,14 @@
 namespace Cls
 {
 
-// static void classifer_softmax(float *predict, int length, int *max_index, cudaStream_t stream)
-// {
-//     int block_size = 256;
-//     checkKernel(softmax<<<1, block_size, block_size * sizeof(float), stream>>>(predict, length, max_index));
-// }
-
 bool ClsModelImpl::load(const std::string &engine_file,
                     int gpu_id,
                     int max_batch_size)
 {
-    trt_ = TensorRT::load(engine_file);
     device_id_ = gpu_id;
+    auto device_guard = this->get_device();
+    trt_ = TensorRT::load(engine_file);
+
     if (trt_ == nullptr)
     {
         std::cerr << "Error load TensorRT engine: " << engine_file << std::endl;
@@ -45,6 +41,8 @@ bool ClsModelImpl::load(const std::string &engine_file,
 
 InferResult ClsModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *stream)
 {
+    
+    auto device_guard = this->get_device();
     // 推理图片的数量
     int num_image = inputs.size();
     assert(num_image < max_batch_size_);
@@ -77,14 +75,15 @@ InferResult ClsModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *str
     std::vector<affine::CropResizeMatrix> affine_matrixs(infer_batch_size);
 
     // 预处理
-    cudaStream_t stream_ = (cudaStream_t)stream;
+    cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
+    
     for (int i=0; i < num_image; ++i)
     {
         preprocess(i,
                    tensor::Image(inputs[i].data, inputs[i].cols, inputs[i].rows),
                    preprocess_buffers_[i],
                    affine_matrixs[i],
-                   stream);
+                   stream_);
     }
 
     float *output_array_device = output_array_.gpu();

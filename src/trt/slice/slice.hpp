@@ -3,6 +3,7 @@
 
 #include "common/image.hpp"
 #include "common/memory.hpp"
+#include "common/cuda_tools.hpp"
 #include "opencv2/opencv.hpp"
 #include <vector>
 

@@ -15,8 +15,10 @@ bool DFineSahiModelImpl::load(const std::string &engine_file,
     double slice_horizontal_ratio,
     double slice_vertical_ratio)
 {
-    trt_       = TensorRT::load(engine_file);
     device_id_ = gpu_id;
+    auto device_guard = this->get_device();  // 保证 device 正确
+    trt_       = TensorRT::load(engine_file);
+
     if (trt_ == nullptr)
         return false;
     
@@ -53,9 +55,11 @@ bool DFineSahiModelImpl::load(const std::string &engine_file,
 InferResult DFineSahiModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *stream)
 {
     assert(inputs.size() == 1);
+    auto device_guard = this->get_device();  // 保证 device 正确
+    cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
     if (auto_slice_)
     {
-        slice_->autoSlice(tensor::Image(inputs[0].data, inputs[0].cols, inputs[0].rows), stream);
+        slice_->autoSlice(tensor::Image(inputs[0].data, inputs[0].cols, inputs[0].rows), stream_);
     }
     else
     {
@@ -64,7 +68,7 @@ InferResult DFineSahiModelImpl::forwards(const std::vector<cv::Mat> &inputs, voi
                       slice_height_,
                       slice_horizontal_ratio_,
                       slice_vertical_ratio_,
-                      stream);
+                      stream_);
     }
 
     int num_image  = slice_->slice_num_h_ * slice_->slice_num_v_;
@@ -105,12 +109,11 @@ InferResult DFineSahiModelImpl::forwards(const std::vector<cv::Mat> &inputs, voi
     }
 
     adjust_memory(infer_batch_size);
-    cudaStream_t stream_ = (cudaStream_t)stream;
     affine::ResizeMatrix affine_matrix;
     compute_affine_matrix(affine_matrix, stream_);
     for (int i = 0; i < num_image; ++i)
     {
-        preprocess(i, stream);
+        preprocess(i, stream_);
     }
     checkRuntime(cudaMemcpyAsync(input_buffer_orig_target_size_.gpu(),
                                  input_buffer_orig_target_size_.cpu(),
@@ -257,7 +260,7 @@ std::shared_ptr<InferBase> load_dfine_sahi(const std::string &engine_file,
 {
     try
     {
-        checkRuntime(cudaSetDevice(gpu_id));
+
         return std::shared_ptr<DFineSahiModelImpl>((
             DFineSahiModelImpl *)loadraw(engine_file,
                 names,

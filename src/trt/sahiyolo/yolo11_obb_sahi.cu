@@ -15,8 +15,9 @@ bool Yolo11ObbSahiModelImpl::load(const std::string &engine_file,
                                double slice_horizontal_ratio,
                                double slice_vertical_ratio)
 {
-    trt_       = TensorRT::load(engine_file);
     device_id_ = gpu_id;
+    auto device_guard = this->get_device();  // 保证 device 正确
+    trt_       = TensorRT::load(engine_file);
     if (trt_ == nullptr)
         return false;
 
@@ -52,7 +53,8 @@ bool Yolo11ObbSahiModelImpl::load(const std::string &engine_file,
 InferResult Yolo11ObbSahiModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *stream)
 {
     assert(inputs.size() == 1);
-
+    auto device_guard = this->get_device();  // 保证 device 正确
+    cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
     if (auto_slice_)
     {
         slice_->autoSlice(tensor::Image(inputs[0].data, inputs[0].cols, inputs[0].rows));
@@ -64,7 +66,7 @@ InferResult Yolo11ObbSahiModelImpl::forwards(const std::vector<cv::Mat> &inputs,
                       slice_height_,
                       slice_horizontal_ratio_,
                       slice_vertical_ratio_,
-                      stream);
+                      stream_);
     }
 
     int num_image          = slice_->slice_num_h_ * slice_->slice_num_v_;
@@ -100,11 +102,11 @@ InferResult Yolo11ObbSahiModelImpl::forwards(const std::vector<cv::Mat> &inputs,
 
     // 每一张小图的尺寸都是一致的，所以只需要取计算一次仿射矩阵
     affine::LetterBoxMatrix affine_matrix;
-    cudaStream_t stream_ = (cudaStream_t)stream;
+
     compute_affine_matrix(affine_matrix, stream_);
     for (int i = 0; i < num_image; ++i)
     {
-        preprocess(i, stream);
+        preprocess(i, stream_);
     }
 
     float *bbox_output_device = bbox_predict_.gpu();
@@ -236,7 +238,7 @@ std::shared_ptr<InferBase> load_yolo_11_obb_sahi(const std::string &engine_file,
 {
     try
     {
-        checkRuntime(cudaSetDevice(gpu_id));
+        // checkRuntime(cudaSetDevice(gpu_id));
         return std::shared_ptr<Yolo11ObbSahiModelImpl>((Yolo11ObbSahiModelImpl *)loadraw(engine_file,
                                                                                    names,
                                                                                    confidence_threshold,

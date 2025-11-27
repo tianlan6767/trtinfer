@@ -143,3 +143,13 @@ std::shared_ptr<InferBase> load(const std::string &model_path,
     }
     return instance;
 }
+
+InferBase::~InferBase()
+{
+    if (default_stream_)
+    {
+        checkRuntime(cudaSetDevice(device_id_));
+        checkRuntime(cudaStreamDestroy(default_stream_));
+        default_stream_ = nullptr;
+    }
+}

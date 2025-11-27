@@ -21,8 +21,11 @@ bool Yolo11SegModelImpl::load(const std::string &engine_file,
                               int gpu_id,
                               int max_batch_size)
 {
-    trt_       = TensorRT::load(engine_file);
     device_id_ = gpu_id;
+    auto device_guard = this->get_device();  // 保证 device 正确
+    trt_       = TensorRT::load(engine_file);
+
+
     if (trt_ == nullptr)
         return false;
 
@@ -100,7 +103,7 @@ void Yolo11SegModelImpl::preprocess(int ibatch,
     float *inverse_affine_matrix_device = inverse_affine_matrixs_[ibatch]->gpu();
     float *inverse_affine_matrix_host   = inverse_affine_matrixs_[ibatch]->cpu();
 
-    cudaStream_t stream_ = (cudaStream_t)stream;
+    cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
     memcpy(image_host, image.bgrptr, size_image);
     memcpy(affine_matrix_host, affine.d2i, sizeof(affine.d2i));
     memcpy(inverse_affine_matrix_host, affine.i2d, sizeof(affine.i2d));
@@ -160,8 +163,7 @@ std::shared_ptr<object::SegmentMap> Yolo11SegModelImpl::decode_segment(int ib, f
     top                 = top * scale_to_predict_y + 0.5f;
     int mask_out_width  = box_width * scale_to_predict_x + 0.5f;
     int mask_out_height = box_height * scale_to_predict_y + 0.5f;
-
-    cudaStream_t stream_ = (cudaStream_t)stream;
+    cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
     if (mask_out_width > 0 && mask_out_height > 0)
     {
         seg                    = std::make_shared<object::SegmentMap>(oirginal_box_width, oirginal_box_height);
@@ -224,6 +226,7 @@ std::shared_ptr<object::SegmentMap> Yolo11SegModelImpl::decode_segment(int ib, f
 InferResult Yolo11SegModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *stream)
 {
     // 推理图片数量
+    auto device_guard = this->get_device();  // 保证 device 正确
     int num_image = inputs.size();
     assert(num_image <= max_batch_size_);
     // 输入的维度 batch x 3 x width x height
@@ -258,14 +261,14 @@ InferResult Yolo11SegModelImpl::forwards(const std::vector<cv::Mat> &inputs, voi
     adjust_memory(infer_batch_size);
     std::vector<affine::LetterBoxMatrix> affine_matrixs(infer_batch_size);
 
-    cudaStream_t stream_ = (cudaStream_t)stream;
+    cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
     for (int i = 0; i < num_image; ++i)
     {
         preprocess(i,
                    tensor::Image(inputs[i].data, inputs[i].cols, inputs[i].rows),
                    preprocess_buffers_[i],
                    affine_matrixs[i],
-                   stream);
+                   stream_);
     }
     float *bbox_output_device    = bbox_predict_.gpu();
     float *segment_output_device = segment_predict_.gpu();
@@ -365,7 +368,7 @@ InferResult Yolo11SegModelImpl::forwards(const std::vector<cv::Mat> &inputs, voi
             {
                 std::string name = class_names_[label];
 
-                auto seg = decode_segment(ib, pbox, stream);
+                auto seg = decode_segment(ib, pbox, stream_);
                 object::Box seg_box(pbox[0], pbox[1], pbox[2], pbox[3], pbox[4], label, name);
                 object::SegmentationInstance result_object_box(seg_box, seg);
                 output.emplace_back(std::move(result_object_box));
@@ -401,7 +404,6 @@ std::shared_ptr<InferBase> load_yolo_11_seg(const std::string &engine_file,
 {
     try
     {
-        checkRuntime(cudaSetDevice(gpu_id));
         return std::shared_ptr<Yolo11SegModelImpl>(
             (Yolo11SegModelImpl *)
                 loadraw(engine_file, names, confidence_threshold, nms_threshold, gpu_id, max_batch_size));

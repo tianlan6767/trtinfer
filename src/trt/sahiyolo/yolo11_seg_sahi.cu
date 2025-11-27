@@ -21,8 +21,10 @@ bool Yolo11SegSahiModelImpl::load(const std::string &engine_file,
                                   double slice_horizontal_ratio,
                                   double slice_vertical_ratio)
 {
-    trt_       = TensorRT::load(engine_file);
     device_id_ = gpu_id;
+    auto device_guard = this->get_device();  // 保证 device 正确
+    trt_       = TensorRT::load(engine_file);
+
     if (trt_ == nullptr)
         return false;
 
@@ -96,7 +98,7 @@ std::shared_ptr<object::SegmentMap> Yolo11SegSahiModelImpl::decode_segment(int i
     top                  = top * scale_to_predict_y + 0.5f;
     int mask_out_width   = box_width * scale_to_predict_x + 0.5f;
     int mask_out_height  = box_height * scale_to_predict_y + 0.5f;
-    cudaStream_t stream_ = (cudaStream_t)stream;
+    cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
     if (mask_out_width > 0 && mask_out_height > 0)
     {
         seg                    = std::make_shared<object::SegmentMap>(oirginal_box_width, oirginal_box_height);
@@ -160,6 +162,8 @@ std::shared_ptr<object::SegmentMap> Yolo11SegSahiModelImpl::decode_segment(int i
 InferResult Yolo11SegSahiModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *stream)
 {
     assert(inputs.size() == 1);
+    auto device_guard = this->get_device();  // 保证 device 正确
+    cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
 
     if (auto_slice_)
     {
@@ -172,7 +176,7 @@ InferResult Yolo11SegSahiModelImpl::forwards(const std::vector<cv::Mat> &inputs,
                       slice_height_,
                       slice_horizontal_ratio_,
                       slice_vertical_ratio_,
-                      stream);
+                      stream_);
     }
 
     int num_image          = slice_->slice_num_h_ * slice_->slice_num_v_;
@@ -211,11 +215,10 @@ InferResult Yolo11SegSahiModelImpl::forwards(const std::vector<cv::Mat> &inputs,
 
     // 每一张小图的尺寸都是一致的，所以只需要取计算一次仿射矩阵
     affine::LetterBoxMatrix affine_matrix;
-    cudaStream_t stream_ = (cudaStream_t)stream;
     compute_affine_matrix(affine_matrix, stream_);
     for (int i = 0; i < num_image; ++i)
     {
-        preprocess(i, stream);
+        preprocess(i, stream_);
     }
 
     float *bbox_output_device    = bbox_predict_.gpu();
@@ -298,7 +301,7 @@ InferResult Yolo11SegSahiModelImpl::forwards(const std::vector<cv::Mat> &inputs,
             if (keepflag == 1)
             {
                 std::string name = class_names_[label];
-                auto seg         = decode_segment(ib, pbox, stream);
+                auto seg         = decode_segment(ib, pbox, stream_);
                 object::Box seg_box(pbox[0], pbox[1], pbox[2], pbox[3], pbox[4], label, name);
                 object::SegmentationInstance result_object_box(seg_box, seg);
                 output.emplace_back(std::move(result_object_box));

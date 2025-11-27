@@ -83,13 +83,28 @@ namespace CUDATools{
         );
     }
 
-    AutoDevice::AutoDevice(int device_id){
-
-        cudaGetDevice(&old_);
-        checkCudaRuntime(cudaSetDevice(device_id));
+    AutoDevice::AutoDevice(int device_id)
+    {
+        checkCudaRuntime(cudaGetDevice(&old_));
+        if(old_ != device_id){
+            
+            checkCudaRuntime(cudaSetDevice(device_id));
+        }
     }
 
     AutoDevice::~AutoDevice(){
         checkCudaRuntime(cudaSetDevice(old_));
+    }
+
+    AutoStream::AutoStream(cudaStream_t *stream) : stream_(stream)
+    {
+        if (stream_ && *stream_ !=nullptr)
+            checkCudaRuntime(cudaStreamCreate(stream_));
+    }
+
+    AutoStream::~AutoStream()
+    {
+        if(stream_ && *stream_ != nullptr)
+            checkCudaRuntime(cudaStreamDestroy(*stream_));
     }
 }

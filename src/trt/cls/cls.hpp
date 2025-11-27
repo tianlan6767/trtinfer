@@ -44,7 +44,7 @@ public:
 
     bool isdynamic_model_ = false;
     int max_batch_size_ = 1;
-    int device_id_  = 0;
+    // int device_id_  = 0;
     float confidence_threshold_;
 
     bool load(const std::string &engine_file,
@@ -91,7 +91,7 @@ public:
         float *affine_metrix_device = affine_matrixs_[ibatch]->gpu();
         float *affine_metrix_host   = affine_matrixs_[ibatch]->cpu();
 
-        cudaStream_t stream_ = (cudaStream_t)stream;
+        cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
         memcpy(image_host, image.bgrptr, size_image);
         // memcpy(image_cpu, image.bgrptr, size_image);
         memcpy(affine_metrix_host, affine.d2i, sizeof(affine.d2i));

@@ -59,13 +59,31 @@ namespace CUDATools{
     std::string device_name(int device_id);
     std::string device_description();
 
-    class AutoDevice{
-    public:
-        AutoDevice(int device_id = 0);
-        virtual ~AutoDevice();
-    
-    private:
-        int old_ = -1;
+    class AutoDevice
+    {
+        public:
+            AutoDevice(int device_id = 0);
+            virtual ~AutoDevice();
+
+            AutoDevice(const AutoDevice&) = delete;
+            AutoDevice& operator=(const AutoDevice&) = delete;
+        
+        private:
+            int old_ = -1;
+    };
+
+    class AutoStream
+    {
+        public:
+            explicit AutoStream(cudaStream_t *stream);
+            virtual ~AutoStream();
+
+            // 禁止拷贝
+            AutoStream(const AutoStream &) = delete;
+            AutoStream &operator=(const AutoStream &) = delete;
+        
+        private:
+            cudaStream_t *stream_;
     };
 }
 

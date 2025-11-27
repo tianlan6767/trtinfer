@@ -2,6 +2,7 @@
 #define INFER_HPP__
 
 #include "common/object.hpp"
+#include "common/cuda_tools.hpp"
 #include <iostream>
 #include <variant>
 
@@ -103,11 +104,33 @@ using InferResult = std::variant<object::DetectionResultArray,
                                  std::vector<object::ClsResultArray>>;
 class InferBase
 {
-  public:
-    virtual InferResult forwards(const std::vector<cv::Mat> &inputs, void *stream = nullptr) = 0;
+public:
+    virtual ~InferBase();
 
-    virtual ~InferBase() = default;
+    // 推理接口
+    virtual InferResult forwards(const std::vector<cv::Mat>& inputs, void* stream = nullptr) = 0;
 
+    // RAII device guard
+    inline CUDATools::AutoDevice get_device()
+    {
+        // 返回一个 RAII guard，切换到当前对象的 device
+        return CUDATools::AutoDevice(device_id_);
+    };
+
+    inline cudaStream_t get_stream(cudaStream_t user_stream = nullptr) {
+        if (user_stream)
+            return user_stream;
+
+        if (!default_stream_) {
+            checkRuntime(cudaSetDevice(device_id_));
+            checkRuntime(cudaStreamCreate(&default_stream_));
+        }
+        return default_stream_;
+    }
+
+protected:
+    int device_id_ = 0;
+    cudaStream_t default_stream_ = nullptr;
 };
 
 std::shared_ptr<InferBase> load(const std::string &model_path,

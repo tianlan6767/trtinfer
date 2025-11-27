@@ -52,7 +52,7 @@ public:
 
     bool isdynamic_model_ = false;
     int max_batch_size_ = 1;
-    int device_id_  = 0;
+    // int device_id_  = 0;
 
     float confidence_threshold_;
     float nms_threshold_;
@@ -87,7 +87,8 @@ public:
         float *affine_matrix_device = affine_matrixs_[ibatch]->gpu();
         float *affine_matrix_host   = affine_matrixs_[ibatch]->cpu();
     
-        cudaStream_t stream_ = (cudaStream_t)stream;
+        cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
+        
         memcpy(image_host, image.bgrptr, size_image);
         memcpy(affine_matrix_host, affine.d2i, sizeof(affine.d2i));
         checkRuntime(cudaMemcpyAsync(image_device, image_host, size_image, cudaMemcpyHostToDevice, stream_));

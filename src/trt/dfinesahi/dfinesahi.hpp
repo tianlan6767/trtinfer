@@ -66,7 +66,7 @@ public:
 
     bool isdynamic_model_ = false;
     int max_batch_size_ = 1;
-    int device_id_  = 0;
+    // int device_id_  = 0;
 
     int num_box_element_ = 9;
     int max_image_boxes_ = 1000;
@@ -101,7 +101,8 @@ public:
         uint8_t *image_device       = slice_->output_images_.gpu() + ibatch * size_image;
 
         // speed up
-        cudaStream_t stream_ = (cudaStream_t)stream;
+        cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
+        
 
         warp_affine_bilinear_and_normalize_plane(image_device,
                                                 slice_->slice_width_ * 3,
@@ -153,7 +154,8 @@ public:
         float *affine_matrix_device = affine_matrix_.gpu();
         float *affine_matrix_host   = affine_matrix_.cpu();
 
-        cudaStream_t stream_ = (cudaStream_t)stream;
+        cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
+
         memcpy(affine_matrix_host, affine.d2i, sizeof(affine.d2i));
         checkRuntime(
         cudaMemcpyAsync(affine_matrix_device, affine_matrix_host, sizeof(affine.d2i), cudaMemcpyHostToDevice, stream_));

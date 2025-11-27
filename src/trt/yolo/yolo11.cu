@@ -13,8 +13,10 @@ bool Yolo11ModelImpl::load(const std::string &engine_file,
                            int gpu_id,
                            int max_batch_size)
 {
-    trt_       = TensorRT::load(engine_file);
     device_id_ = gpu_id;
+    auto device_guard = this->get_device();  // 保证 device 正确
+    trt_       = TensorRT::load(engine_file);
+
     if (trt_ == nullptr)
         return false;
 
@@ -41,6 +43,7 @@ bool Yolo11ModelImpl::load(const std::string &engine_file,
 InferResult Yolo11ModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *stream)
 {
     // 推理图片数量
+    auto device_guard = this->get_device();  // 保证 device 正确
     int num_image = inputs.size();
     assert(num_image <= max_batch_size_);
     // 输入的维度 batch x 3 x width x height
@@ -75,14 +78,14 @@ InferResult Yolo11ModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *
     adjust_memory(infer_batch_size);
     std::vector<affine::LetterBoxMatrix> affine_matrixs(infer_batch_size);
 
-    cudaStream_t stream_ = (cudaStream_t)stream;
+    cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
     for (int i = 0; i < num_image; ++i)
     {
         preprocess(i,
                    tensor::Image(inputs[i].data, inputs[i].cols, inputs[i].rows),
                    preprocess_buffers_[i],
                    affine_matrixs[i],
-                   stream);
+                   stream_);
     }
     float *bbox_output_device = bbox_predict_.gpu();
 
@@ -194,7 +197,7 @@ std::shared_ptr<InferBase> load_yolo_11(const std::string &engine_file,
 {
     try
     {
-        checkRuntime(cudaSetDevice(gpu_id));
+        // checkRuntime(cudaSetDevice(gpu_id));
         return std::shared_ptr<Yolo11ModelImpl>((
             Yolo11ModelImpl *)loadraw(engine_file, names, confidence_threshold, nms_threshold, gpu_id, max_batch_size));
     }

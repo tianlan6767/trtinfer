@@ -13,7 +13,7 @@ namespace AD
             // mask框的仿射矩阵
 
 
-    }
+    };
 }
 
 

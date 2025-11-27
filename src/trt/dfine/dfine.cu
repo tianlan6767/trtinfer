@@ -10,8 +10,10 @@ bool DFineModelImpl::load(const std::string &engine_file,
     int gpu_id,
     int max_batch_size)
 {
-    trt_       = TensorRT::load(engine_file);
     device_id_ = gpu_id;
+    auto device_guard = this->get_device();
+    trt_       = TensorRT::load(engine_file);
+
     if (trt_ == nullptr)
         return false;
     
@@ -40,6 +42,8 @@ bool DFineModelImpl::load(const std::string &engine_file,
 
 InferResult DFineModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *stream)
 {
+    auto device_guard = this->get_device();
+    // 推理图片的数量
     int num_image = inputs.size();
     assert(num_image <= max_batch_size_);
     auto input_dims0      = trt_->static_dims(0);
@@ -80,14 +84,15 @@ InferResult DFineModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *s
     adjust_memory(infer_batch_size);
     std::vector<affine::ResizeMatrix> affine_matrixs(infer_batch_size);
 
-    cudaStream_t stream_ = (cudaStream_t)stream;
+    cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
+    
     for (int i = 0; i < num_image; ++i)
     {
         preprocess(i,
                    tensor::Image(inputs[i].data, inputs[i].cols, inputs[i].rows),
                    preprocess_images_buffers_[i],
                    affine_matrixs[i],
-                   stream);
+                   stream_);
     }
     checkRuntime(cudaMemcpyAsync(input_buffer_orig_target_size_.gpu(),
                                  input_buffer_orig_target_size_.cpu(),
@@ -178,7 +183,7 @@ std::shared_ptr<InferBase> load_dfine(const std::string &engine_file,
 {
     try
     {
-        checkRuntime(cudaSetDevice(gpu_id));
+        // checkRuntime(cudaSetDevice(gpu_id));
         return std::shared_ptr<DFineModelImpl>((
             DFineModelImpl *)loadraw(engine_file, names, confidence_threshold, nms_threshold, gpu_id, max_batch_size));
     }
