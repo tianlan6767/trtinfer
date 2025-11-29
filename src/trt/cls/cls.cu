@@ -83,7 +83,7 @@ InferResult ClsModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *str
                    tensor::Image(inputs[i].data, inputs[i].cols, inputs[i].rows),
                    preprocess_buffers_[i],
                    affine_matrixs[i],
-                   stream_);
+                   stream);
     }
 
     float *output_array_device = output_array_.gpu();
@@ -110,7 +110,7 @@ InferResult ClsModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *str
         {"images", input_buffer_.gpu()},
         {"output0", output_array_device}
     };
-    if(!trt_->forward(bindings, stream_)){
+    if(!trt_->forward(bindings, stream)){
         std::cerr << "Error forward for cls model\n";
         return {};
     }
