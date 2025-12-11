@@ -6,6 +6,7 @@
 #include <pybind11/numpy.h>
 #include "opencv2/opencv.hpp"
 #include "trt/infer.hpp"
+#include "cv_match/matcher.h"
 
 #define UNUSED(expr) do { (void)(expr); } while (0)
 
@@ -120,7 +121,12 @@ public:
     }
 };
 
+
+
 }}//! end namespace pybind11::detail
+
+
+
 
 struct DetResult
 {
@@ -283,9 +289,44 @@ private:
 
 };
 
+class MatcherWrapper {
+public:
+    std::unique_ptr<template_matching::Matcher> matcher;
 
+    MatcherWrapper(const template_matching::MatcherParam& param)
+    {
+        // 创建 matcher 对象
+        matcher = template_matching::GetMatcher(param);
+        if (!matcher) {
+            throw std::runtime_error("GetMatcher 返回空指针");
+        }
+    }
+
+    void setTemplate(const cv::Mat& templ) {
+        matcher->setTemplate(templ);
+    }
+
+    py::list match(const cv::Mat& img) {
+        std::vector<template_matching::MatchResult> cpp_results;
+        int n = matcher->match(img, cpp_results);
+
+        py::list py_results;
+        for (auto& r : cpp_results) {
+            py_results.append(r);   // 要确保 MatchResult 已绑定 pybind11
+        }
+
+        return py_results;
+    }
+};
 
 PYBIND11_MODULE(tinfer, m){
+    py::class_<cv::Point2d>(m, "Point2d")
+    .def_readwrite("x", &cv::Point2d::x)
+    .def_readwrite("y", &cv::Point2d::y)
+    .def("__repr__", [](const cv::Point2d &p){
+        return "<Point2d x=" + std::to_string(p.x) + " y=" + std::to_string(p.y) + ">";
+    });
+
     py::enum_<ModelType>(m, "ModelType")
         .value("YOLOV5", ModelType::YOLOV5)
         .value("YOLO11", ModelType::YOLO11)
@@ -386,4 +427,62 @@ PYBIND11_MODULE(tinfer, m){
             py::arg("slice_vertical_ratio"))
     .def_property_readonly("valid", &TrtInfer::valid)
     .def("forwards", &TrtInfer::forwards, py::arg("images"));
+
+    // -----------------------------
+    // MatcherType 枚举
+    // -----------------------------
+    py::enum_<template_matching::MatcherType>(m, "MatcherType")
+        .value("PATTERN", template_matching::MatcherType::PATTERN)
+        .export_values();
+    
+    // MatcherParam 结构体
+    py::class_<template_matching::MatcherParam>(m, "MatcherParam")
+        .def(py::init<>())
+        .def_readwrite("matcherType", &template_matching::MatcherParam::matcherType)
+        .def_readwrite("maxCount", &template_matching::MatcherParam::maxCount)
+        .def_readwrite("scoreThreshold", &template_matching::MatcherParam::scoreThreshold)
+        .def_readwrite("iouThreshold", &template_matching::MatcherParam::iouThreshold)
+        .def_readwrite("angle", &template_matching::MatcherParam::angle)
+        .def_readwrite("minArea", &template_matching::MatcherParam::minArea)
+        .def("__repr__", [](const template_matching::MatcherParam &param) {
+            std::ostringstream oss;
+            oss << "MatcherParam(matcherType: " << static_cast<int>(param.matcherType)
+                << ", maxCount: " << param.maxCount
+                << ", scoreThreshold: " << param.scoreThreshold
+                << ", iouThreshold: " << param.iouThreshold
+                << ", angle: " << param.angle
+                << ", minArea: " << param.minArea
+                << ")";
+            return oss.str();
+        });
+
+    // -----------------------------
+    // MatchResult 结构体
+    // -----------------------------
+    py::class_<template_matching::MatchResult>(m, "MatchResult")
+        .def_readwrite("LeftTop", &template_matching::MatchResult::LeftTop)
+        .def_readwrite("LeftBottom", &template_matching::MatchResult::LeftBottom)
+        .def_readwrite("RightTop", &template_matching::MatchResult::RightTop)
+        .def_readwrite("RightBottom", &template_matching::MatchResult::RightBottom)
+        .def_readwrite("Center", &template_matching::MatchResult::Center)
+        .def_readwrite("Angle", &template_matching::MatchResult::Angle)
+        .def_readwrite("Score", &template_matching::MatchResult::Score)
+        .def("__repr__", [](const template_matching::MatchResult &r){
+            std::ostringstream oss;
+            oss << "MatchResult(LeftTop=(" << r.LeftTop.x << "," << r.LeftTop.y << ")"
+                << ", LeftBottom=(" << r.LeftBottom.x << "," << r.LeftBottom.y << ")"
+                << ", RightTop=(" << r.RightTop.x << "," << r.RightTop.y << ")"
+                << ", RightBottom=(" << r.RightBottom.x << "," << r.RightBottom.y << ")"
+                << ", Center=(" << r.Center.x << "," << r.Center.y << ")"
+                << ", Angle=" << r.Angle
+                << ", Score=" << r.Score
+                << ")";
+            return oss.str();
+        });
+
+
+    py::class_<MatcherWrapper>(m, "MatcherWrapper")
+    .def(py::init<const template_matching::MatcherParam&>())
+    .def("setTemplate", &MatcherWrapper::setTemplate)         // 新增方法
+    .def("match", &MatcherWrapper::match);
 };

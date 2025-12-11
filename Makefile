@@ -14,6 +14,11 @@ opencv_include_path  := /home/ps/workspace/trt/lean/cv/include/opencv4
 trt_include_path     := /home/ps/workspace/trt/lean/TensorRT-10.11.0.33/include
 cuda_include_path    := $(cuda_home)/include
 ffmpeg_include_path  := 
+spdlog_include_path := /home/ps/workspace/trt/trt-sahi-yolo/src/3rdParty/spdlog/include
+# python_include_path
+exclude_path  := src/3rdParty/spdlog/tests src/3rdParty/spdlog/example src/3rdParty/spdlog/bench src/3rdParty/spdlog/src
+
+FIND_EXCLUDES := $(foreach d,$(exclude_path),! -path "$(d)/*")
 
 python_include_path  := /usr/local/include/python3.12
 
@@ -22,7 +27,9 @@ include_paths        := $(project_include_path) \
 						$(opencv_include_path) \
 						$(trt_include_path) \
 						$(cuda_include_path) \
-						$(python_include_path)
+						$(python_include_path) \
+						$(spdlog_include_path) \
+
 
 
 opencv_library_path  := /home/ps/workspace/trt/lean/cv/lib
@@ -37,7 +44,7 @@ library_paths        := $(opencv_library_path) \
 						$(python_library_path) \
 						/usr/lib/wsl/lib \
 
-link_opencv       := opencv_core opencv_imgproc opencv_videoio opencv_imgcodecs
+link_opencv       := opencv_core opencv_imgproc opencv_videoio opencv_imgcodecs opencv_highgui
 link_trt          := nvinfer nvinfer_plugin nvonnxparser
 link_cuda         := cuda cublas cudart cudnn
 link_sys          := stdc++ dl
@@ -60,7 +67,7 @@ cu_compile_flags := $(foreach flag,$(cpp_compile_flags),-Xcompiler $(flag)) -dia
 link_flags        := -pthread -fopenmp -Wl,-rpath='$$ORIGIN' $(library_paths) $(link_librarys)
 
 
-cpp_srcs := $(shell find $(srcdir) -name "*.cpp")
+cpp_srcs := $(shell find $(srcdir) -name "*.cpp" $(FIND_EXCLUDES))
 cpp_objs := $(cpp_srcs:.cpp=.cpp.o)
 cpp_objs := $(cpp_objs:$(srcdir)/%=$(objdir)/%)
 cpp_mk   := $(cpp_objs:.cpp.o=.cpp.mk)

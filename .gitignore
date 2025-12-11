@@ -43,3 +43,4 @@ objs
 .idea
 .vscode
 
+src/3rdParty

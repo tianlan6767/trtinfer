@@ -1,5 +1,11 @@
 #include "common/timer.hpp"
 
+#ifdef _WIN32
+#include "windows.h"
+#else
+#include <dlfcn.h>
+#endif // _WIN32
+
 void run_yolov5();
 void run_yolov5_sahi();
 void run_yolo11obb();
@@ -12,6 +18,7 @@ void run_yolo11();
 void run_yolo11_sahi();
 void run_cls();
 void run_dfine();
+void run_match_example();
 
 
 int main()
@@ -27,7 +34,8 @@ int main()
     // run_yolo11();
     // run_yolo11_sahi();
     // run_dfine();
-    run_cls();
+    // run_cls();
+    run_match_example();
     
     return 0;
 }
