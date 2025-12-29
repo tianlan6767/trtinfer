@@ -36,7 +36,7 @@ opencv_library_path  := /home/ps/workspace/trt/lean/cv/lib
 trt_library_path     := /home/ps/workspace/trt/lean/TensorRT-10.11.0.33/lib/
 cuda_library_path    := $(cuda_home)/lib64/
 # python_library_path  := /usr/lib/x86_64-linux-gnu
-python_library_path  := usr/local/lib/python3.12/config-3.12-x86_64-linux-gnu
+python_library_path  := /usr/local/lib/python3.12/config-3.12-x86_64-linux-gnu
 
 library_paths        := $(opencv_library_path) \
 						$(trt_library_path) \
