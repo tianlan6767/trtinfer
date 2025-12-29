@@ -69,7 +69,7 @@ public:
             throw std::logic_error("Unsupported type, only support uchar, int32, float");
             return false;
         }
-        value = cv::Mat(nh, nw, dtype, info.ptr);
+        value = cv::Mat(nh, nw, dtype, info.ptr).clone();
         return true;
     }
 
@@ -307,15 +307,34 @@ public:
     }
 
     py::list match(const cv::Mat& img) {
-        std::vector<template_matching::MatchResult> cpp_results;
-        int n = matcher->match(img, cpp_results);
+        try {
+            // cv::Mat img_clone = img.clone();
+            std::vector<template_matching::MatchResult> cpp_results;
+            int n = matcher->match(img, cpp_results);
 
-        py::list py_results;
-        for (auto& r : cpp_results) {
-            py_results.append(r);   // 要确保 MatchResult 已绑定 pybind11
+            // std::cout << "[DEBUG] matcher->match returned " << n << " results" << std::endl;
+
+            // for (size_t i = 0; i < cpp_results.size(); ++i) {
+            //     const auto& r = cpp_results[i];
+            //     std::cout << "[DEBUG] Result " << i
+            //             << " LT=(" << r.LeftTop.x << "," << r.LeftTop.y << ")"
+            //             << " RT=(" << r.RightTop.x << "," << r.RightTop.y << ")"
+            //             << " LB=(" << r.LeftBottom.x << "," << r.LeftBottom.y << ")"
+            //             << " RB=(" << r.RightBottom.x << "," << r.RightBottom.y << ")"
+            //             << " Center=(" << r.Center.x << "," << r.Center.y << ")"
+            //             << " Angle=" << r.Angle
+            //             << " Score=" << r.Score
+            //             << std::endl;
+            // }
+
+            py::list py_results;
+            for (auto& r : cpp_results)
+                py_results.append(r);
+            return py_results;
+        } catch (const std::exception& e) {
+            std::cerr << "[ERROR] Exception in match: " << e.what() << std::endl;
+            throw py::value_error(e.what());
         }
-
-        return py_results;
     }
 };
 

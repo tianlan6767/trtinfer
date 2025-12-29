@@ -71,6 +71,12 @@ namespace template_matching
 
 		double Angle; // 角度
 		double Score; // 匹配得分
+
+	// 默认构造函数，初始化所有成员
+    MatchResult()
+        : LeftTop(0,0), LeftBottom(0,0), RightTop(0,0), RightBottom(0,0), Center(0,0),
+          Angle(0.0), Score(0.0)
+    {};	
 	};
 
 }
