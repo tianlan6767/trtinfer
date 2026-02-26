@@ -220,7 +220,7 @@ InferResult UviadModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *s
 
 
 
-void UviadModelImpl::decode_segment(int ib, float *parray, const cv::Mat &input, object::SegmentationResultArray &output, cudaStream_t stream)
+void UviadModelImpl::decode_segment(int ib, float *parray, const cv::Mat &input, std::vector<object::SegmentationResultArray> &output, cudaStream_t stream)
 {
 
     cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
@@ -320,7 +320,7 @@ void UviadModelImpl::decode_segment(int ib, float *parray, const cv::Mat &input,
             stream_));
         object::Box seg_box(left, top, right, bottom, float(maxval / 255.0), 0);
         object::SegmentationInstance result_object_box(seg_box, seg);
-        output.push_back(result_object_box);
+        output.emplace_back(result_object_box);
     }
 }
 

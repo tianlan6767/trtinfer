@@ -39,7 +39,7 @@ namespace AD
                 affine::ResizeMatrix &affine,
                 void *stream = nullptr);
         private:
-            void decode_segment(int ib, float *parray, const cv::Mat &input, object::SegmentationResultArray &output, cudaStream_t stream);
+            void decode_segment(int ib, float *parray, const cv::Mat &input, std::vector<object::SegmentationResultArray> &output, cudaStream_t stream);
     };
 
     std::shared_ptr<InferBase> load_uviad(const std::string &engine_file,
