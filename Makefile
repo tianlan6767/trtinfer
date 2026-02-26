@@ -10,7 +10,7 @@ nvcc      := $(cuda_home)/bin/nvcc -ccbin=$(cc)
 
 
 project_include_path := src
-opencv_include_path  := /home/ps/workspace/trt/lean/cv/include/opencv4
+opencv_include_path  := /home/ps/workspace/trt/lean/cv4110/install/include/opencv4
 trt_include_path     := /home/ps/workspace/trt/lean/TensorRT-10.11.0.33/include
 cuda_include_path    := $(cuda_home)/include
 ffmpeg_include_path  := 
@@ -32,7 +32,7 @@ include_paths        := $(project_include_path) \
 
 
 
-opencv_library_path  := /home/ps/workspace/trt/lean/cv/lib
+opencv_library_path  := /home/ps/workspace/trt/lean/cv4110/install/lib
 trt_library_path     := /home/ps/workspace/trt/lean/TensorRT-10.11.0.33/lib/
 cuda_library_path    := $(cuda_home)/lib64/
 # python_library_path  := /usr/lib/x86_64-linux-gnu
