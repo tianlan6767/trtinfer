@@ -633,4 +633,15 @@ __global__ void max_kernel(float* predict, int length, int *max_index)
     }
 }
 
+__global__ void normalize_and_thres_mask_kernel(float* mask, float* mask_out, int numel, float confidence_threshold)
+{
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= numel)
+        return;
+
+    float val = mask[idx] / 255.0f; // 归一化到0-1之间
+    // 这里的confidence_threshold是为了过滤掉一些无效的mask值，避免后续处理时的干扰
+    mask_out[idx] = val > confidence_threshold ? val : 0.0f;
+}
+
 } // namespace cuda

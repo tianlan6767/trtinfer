@@ -26,12 +26,11 @@ class ADModelImpl : public InferBase
         ADModelImpl() = default;
         virtual ~ADModelImpl() = default;
     
-
     protected:
         std::vector<std::shared_ptr<tensor::Memory<unsigned char>>> preprocess_buffers_;
         tensor::Memory<float> input_buffer_, bbox_predict_, output_boxarray_;
         std::vector<std::string> class_names_;
-        std::vector<TensorRT::Engine> trt_;
+        std::shared_ptr<TensorRT::Engine> trt_;
         std::vector<std::shared_ptr<tensor::Memory<int>>> image_box_counts_;
         std::vector<std::shared_ptr<tensor::Memory<float>>> affine_matrixs_;
         int network_input_width_, network_input_height_;
@@ -44,14 +43,14 @@ class ADModelImpl : public InferBase
         int device_id_  = 0;
         int num_classes_ = 0;
         
-        int num_box_element_ = 9;
+        int num_box_element_ = 9;   // x1, y1, x2, y2, score, class_id, keep_prob, box_idx, batch_idx
         int num_key_point_   = 0;
         int max_image_boxes_ = 1024;
 
 
     public:
         virtual bool load(const std::string &engine_file,
-            const std::vector<std::string> &names,
+            // const std::vector<std::string> &names,
             float confidence_threshold,
             int gpu_id,
             int max_batch_size) = 0;

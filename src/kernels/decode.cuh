@@ -108,6 +108,7 @@ __global__ void decode_dfine_kernel(
 
 __global__ void softmax_kernel(float* predict, int length, int *max_index);
 __global__ void max_kernel(float* predict, int length, int *max_index);
+__global__ void normalize_and_thres_mask_kernel(float* mask, float* mask_out, int numel, float confidence_threshold);
 
 } // namespace cuda
 

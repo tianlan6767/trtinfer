@@ -20,7 +20,8 @@ enum class ModelType : int
     YOLO11OBBSAHI  = 9,
     DFINE          = 10,
     DFINESAHI      = 11,
-    CLS            = 12
+    CLS            = 12,
+    UVIAD          = 13
 };
 
 // 为枚举类添加字符串转换功能
@@ -57,6 +58,8 @@ inline std::string to_string(ModelType type)
         return "DFINESAHI";
     case ModelType::CLS:
         return "CLS";
+    case ModelType::UVIAD:
+        return "UVIAD";
     default:
         return "UNKNOWN";
     }
@@ -75,7 +78,8 @@ inline ModelType from_string(const std::string &str)
                                                                         {"YOLO11SEGSAHI", ModelType::YOLO11SEGSAHI},
                                                                         {"YOLO11OBB", ModelType::YOLO11OBB},
                                                                         {"YOLO11OBBSAHI", ModelType::YOLO11OBBSAHI},
-                                                                        {"CLS", ModelType::CLS}};
+                                                                        {"CLS", ModelType::CLS},
+                                                                        {"UVIAD", ModelType::UVIAD}};
 
     auto it = str2enum.find(str);
     if (it != str2enum.end())

@@ -13,6 +13,7 @@
 #include "trt/sahiyolo/yolo11_seg_sahi.hpp"
 #include "trt/sahiyolo/yolo11_obb_sahi.hpp"
 #include "trt/sahiyolo/yolov5_sahi.hpp"
+#include "trt/ad/uviad.hpp"
 
 
 std::shared_ptr<InferBase> load(const std::string &model_path,
@@ -136,6 +137,9 @@ std::shared_ptr<InferBase> load(const std::string &model_path,
         
     case ModelType::CLS:
         instance = Cls::load_cls(model_path, gpu_id, max_batch_size);
+        break;
+    case ModelType::UVIAD:
+        instance = AD::load_uviad(model_path, gpu_id, confidence_threshold, max_batch_size);
         break;
     default:
         instance = nullptr;

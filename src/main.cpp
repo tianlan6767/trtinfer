@@ -19,7 +19,7 @@ void run_yolo11_sahi();
 void run_cls();
 void run_dfine();
 void run_match_example();
-
+void run_uviad();
 
 int main()
 {
@@ -35,7 +35,8 @@ int main()
     // run_yolo11_sahi();
     // run_dfine();
     // run_cls();
-    run_match_example();
+    // run_match_example();
+    run_uviad();
     
     return 0;
 }

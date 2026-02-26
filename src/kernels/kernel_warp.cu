@@ -376,3 +376,10 @@ void classifer_max(float* predict, int length, int *max_index, cudaStream_t stre
     auto block = block_dims(length);
     checkKernel(cuda::max_kernel<<<grid, block, block.x * (sizeof(float)+sizeof(int)), stream>>>(predict, length, max_index));
 }
+
+void normalize_and_thres_mask(float* mask, float* mask_out, int numel, float confidence_threshold, cudaStream_t stream)
+{
+    auto grid = grid_dims(numel);
+    auto block = block_dims(numel);
+    checkKernel(cuda::normalize_and_thres_mask_kernel<<<grid, block, block.x * sizeof(float), stream>>>(mask, mask_out, numel, confidence_threshold));
+}
