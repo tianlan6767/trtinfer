@@ -168,7 +168,7 @@ print(result)
 - [ ] **更多模型支持**：添加对其他 YOLO 模型版本的支持。目前支持 **YOLOv11/YOLOv11-Pose/YOLOv8/YOLOv5**
 
 ## install
-
+```
 cd /home/lq67/workspace/lean/cv4110/opencv/build
 cmake -D CMAKE_BUILD_TYPE=Release \
       -D CMAKE_INSTALL_PREFIX=/home/lq67/workspace/lean/cv4110/opencv4110 \
@@ -186,4 +186,95 @@ cmake -D CMAKE_BUILD_TYPE=Release \
       -D BUILD_EXAMPLES=ON ..
 make -j$(nproc)
 make install
+```
 
+## 创建clangd环境
+1️⃣ 安装/检查
+```
+VSCode 已安装 C/C++ 或 clangd 插件
+
+系统已有 clangd，版本建议 ≥ 16
+
+CMake Tools 插件安装，用于生成 compile_commands.json
+```
+2️⃣ 在 CMake 中生成 compile_commands.json
+
+在你的 CMakeLists.txt 中确保有：
+```
+# 生成 compile_commands.json
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+```
+然后在终端里生成构建目录：
+```
+mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Debug
+```
+✅ 这会在 build/compile_commands.json 生成编译信息
+
+3️⃣ 配置 VSCode 使用 compile_commands.json
+```
+在 .vscode/settings.json 中添加：
+
+{
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "clangd.arguments": [
+        "--compile-commands-dir=build",
+        "--background-index"
+    ]
+}
+
+--compile-commands-dir=build 指向 CMake 构建目录
+
+--background-index 启用索引，提升智能提示
+```
+
+4️⃣ 忽略 clangd 不认识的 nvcc 参数
+```
+创建 .clangd 文件（项目根目录）：
+
+CompileFlags:
+  Remove: ["--generate-code", "-forward-unknown-to-host-compiler"]
+
+clangd 会自动过滤掉这些 nvcc 特有参数
+
+不会影响实际编译，只影响智能提示
+```
+5️⃣ Include 路径配置
+```
+在 CMakeLists.txt 中把你源码和依赖路径加上：
+
+include_directories(
+    ${SRC_DIR}          
+    ${TensorRT_DIR}/include
+    ${OpenCV_DIR}/include
+    ${CUDA_TOOLKIT_ROOT_DIR}/include
+    ${CUDNN_DIR}/include
+)
+
+这样 clangd 才能找到 #include "trt/infer.hpp" 等头文件
+
+不要注释掉源码路径 ${SRC_DIR}
+```
+6️⃣ 处理 clangd unused include 提示
+```
+如果头文件确实需要编译，但 clangd 报 unused-includes，可以：
+
+#ifdef CLANGD_ANALYSIS
+void clangd_dummy() { (void)SomeTypeOrFunctionFromHeader; }
+#endif
+
+或者在 .clangd 中关闭 unused-includes 检查：
+
+Diagnostics:
+  UnusedIncludes: false
+```
+7️⃣ 小结
+```
+CMake：保证 CMAKE_EXPORT_COMPILE_COMMANDS、include 路径、CUDA_ARCHITECTURES
+
+VSCode：配置 clangd.arguments 指向 build 目录
+
+.clangd：过滤 nvcc 参数，必要时关闭 unused include
+
+源码 include：确保所有头文件路径都在 CMake include 中
+```
