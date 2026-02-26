@@ -44,3 +44,6 @@ objs
 .vscode
 
 src/3rdParty
+.cache
+build
+llvm.sh
