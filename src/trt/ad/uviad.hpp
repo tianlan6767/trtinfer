@@ -1,6 +1,7 @@
 #ifndef UVIAD_HPP__
 #define UVIAD_HPP__
 
+#include "common/object.hpp"
 #include "trt/ad/ad.hpp"
 
 namespace AD
@@ -13,7 +14,7 @@ namespace AD
             tensor::Memory<float> mask_affine_matrix_;
             std::vector<std::shared_ptr<tensor::Memory<float>>> inverse_affine_matrixs_;
             // 整图的segment缓存
-            tensor::Memory<float> segment_cache_;
+            tensor::Memory<unsigned char> segment_cache_;
             // 整图的segment缓存
             tensor::Memory<unsigned char> original_segment_cache_;
 
@@ -39,7 +40,7 @@ namespace AD
                 affine::ResizeMatrix &affine,
                 void *stream = nullptr);
         private:
-            void decode_segment(int ib, float *parray, const cv::Mat &input, std::vector<object::SegmentationResultArray> &output, cudaStream_t stream);
+            void decode_segment(int ib, float *parray, const cv::Mat &input, std::vector<object::SegmentationInstance> &output, cudaStream_t stream);
     };
 
     std::shared_ptr<InferBase> load_uviad(const std::string &engine_file,
