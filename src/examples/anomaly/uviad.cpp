@@ -6,7 +6,7 @@ static std::vector<std::string> classes_names = {};
 
 void run_uviad()
 {
-    std::shared_ptr<InferBase> model_ = load("/home/ps/workspace/trt/trt-sahi-yolo/workspace/ad/anomaly.trtmodel",
+    std::shared_ptr<InferBase> model_ = load("/home/ps/workspace/trt/trt-sahi-yolo/workspace/ad/ad2/net_100.trtmodel",
         ModelType::UVIAD,
         classes_names,
         0,  
@@ -18,10 +18,11 @@ void run_uviad()
         0,
         0.0,
         0.0);
-    std::exit(0);
-    cv::Mat image = cv::imread("/home/ps/workspace/trt/trt-sahi-yolo/workspace/ad/test/cnc_0804_ngs_small_wifi_54-20-2_1_2.jpg");
+    // std::exit(0);
+    cv::Mat image = cv::imread("/home/ps/workspace/trt/trt-sahi-yolo/workspace/ad/test/ng_loss_cnc_0729_small_wf_silver_taotu_51-95-1_1_42_2.jpg");
     std::vector<cv::Mat> images = {image};
     auto det = model_->forwards(images);
+    printf("Batch size : %zu\n", images.size());    
     std::visit(
         [&images](auto &&result)
         {
