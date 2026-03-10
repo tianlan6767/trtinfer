@@ -12,6 +12,8 @@
 #include <memory>
 #include "common/trt_tensor.hpp"
 #include <fstream>
+#include <string>
+#include <vector>
 
 
 static __host__ __device__ void affine_project(float *matrix, float x, float y, float *ox, float *oy)
@@ -30,6 +32,8 @@ void UviadModelImpl::adjust_memory(int batch_size)
     input_buffer_.cpu(batch_size * input_numel);
     segment_predict_.gpu(batch_size * segment_head_dims_[1] * segment_head_dims_[2] * segment_head_dims_[3]);
     segment_predict_.cpu(batch_size * segment_head_dims_[1] * segment_head_dims_[2] * segment_head_dims_[3]);
+    segment_cache_.gpu(batch_size * segment_head_dims_[1] * segment_head_dims_[2] * segment_head_dims_[3]);
+    segment_cache_.cpu(batch_size * segment_head_dims_[1] * segment_head_dims_[2] * segment_head_dims_[3]);
     output_boxarray_.gpu(batch_size * max_image_boxes_ * num_box_element_);
     output_boxarray_.cpu(batch_size * max_image_boxes_ * num_box_element_);
 
@@ -233,6 +237,15 @@ InferResult UviadModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *s
     // float * seg_out_device_ptr = seg_out_device.gpu<float>();
     // checkRuntime(cudaMemcpyAsync(seg_out_device_ptr, segment_output_device, segment_predict_.gpu_bytes(), cudaMemcpyDeviceToDevice, stream_));
     // seg_out_device.save_to_file("segment_output.bin");
+
+    // 整图小图的segment预测结果
+    float *mask_head_predict = segment_predict_.gpu();
+    
+    unsigned char *mask_out_device = segment_cache_.gpu();
+    // 对mask进行归一化和阈值处理
+    normalize_and_thres_mask(mask_head_predict, mask_out_device, infer_batch_size * segment_head_dims_[1] * segment_head_dims_[2] * segment_head_dims_[3], confidence_threshold_, stream_);
+    checkRuntime(cudaMemcpyAsync(segment_predict_.cpu(), segment_predict_.gpu(), segment_predict_.gpu_bytes(), cudaMemcpyDeviceToHost, stream_));
+    checkRuntime(cudaMemcpyAsync(segment_cache_.cpu(), segment_cache_.gpu(), segment_cache_.gpu_bytes(), cudaMemcpyDeviceToHost, stream_));
     checkRuntime(cudaStreamSynchronize(stream_));
     std::vector<object::SegmentationResultArray> arrout(num_image);
     for (int ib=0; ib<num_image; ++ib)
@@ -243,7 +256,7 @@ InferResult UviadModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *s
         decode_segment(ib, parray, input, output, stream_);
         
     }
-
+    checkRuntime(cudaStreamSynchronize(stream_));
     return arrout;
 }
 
@@ -254,49 +267,33 @@ void UviadModelImpl::decode_segment(int ib, float *parray, const cv::Mat &input,
 
     cudaStream_t stream_ = this->get_stream((cudaStream_t)stream);
 
-    // 整图小图的segment预测结果
-    float *mask_head_predict = segment_predict_.gpu();
     float *mask_head_predict_host = segment_predict_.cpu();
+    unsigned char *mask_out_host = segment_cache_.cpu();
 
-    checkRuntime(cudaMemcpyAsync(mask_head_predict_host, mask_head_predict, segment_predict_.gpu_bytes(), cudaMemcpyDeviceToHost, stream_));
-    // TRT::Tensor seg_out_device(TRT::DataType::Float);
-    // seg_out_device.resize(1, segment_head_dims_[1], segment_head_dims_[2], segment_head_dims_[3]);
-    // float * seg_out_device_ptr = seg_out_device.gpu<float>();
-    // checkRuntime(cudaMemcpyAsync(seg_out_device_ptr, mask_head_predict_host, segment_predict_.gpu_bytes(), cudaMemcpyHostToDevice, stream_));
-    // seg_out_device.save_to_file("segment_output555.bin");
-    cudaStreamSynchronize(stream_);
-
-    float *mask_head_predict_ib = mask_head_predict + ib * segment_head_dims_[1] * segment_head_dims_[2] * segment_head_dims_[3];
     float *mask_head_predict_host_ib = mask_head_predict_host + ib * segment_head_dims_[1] * segment_head_dims_[2] * segment_head_dims_[3];
+    unsigned char *mask_out_host_ib = mask_out_host + ib * segment_head_dims_[1] * segment_head_dims_[2] * segment_head_dims_[3];
 
-    // float *i2d = inverse_affine_matrixs_[ib]->cpu();
     float *d2i = affine_matrixs_[ib]->cpu();
     
     int bytes_of_mask_out = segment_head_dims_[1] * segment_head_dims_[2] * segment_head_dims_[3];
     
-    // 预测的mask_predict经过sigmoid和阈值处理后会写入mask_out_device
-    unsigned char *mask_out_device = segment_cache_.gpu(bytes_of_mask_out);
     auto mask_out_width = segment_head_dims_[3];
     auto mask_out_height = segment_head_dims_[2];
+    cv::Mat mask_head_predict_mat(mask_out_height, mask_out_width, CV_32FC1, mask_head_predict_host_ib);
 
-    cv::Mat mask_head_predict_mat(segment_head_dims_[2], segment_head_dims_[3], CV_32FC1, mask_head_predict_host_ib);
     // std::ofstream mask_out("mask.bin", std::ios::binary);
     // mask_out.write(
     //     (char*)mask_head_predict_host_ib,
     //     bytes_of_mask_out * sizeof(float)   
     // );
     // mask_out.close();
-    // 对mask进行归一化和阈值处理
-    normalize_and_thres_mask(mask_head_predict_ib, mask_out_device, segment_head_dims_[1] * segment_head_dims_[2] * segment_head_dims_[3], confidence_threshold_, stream_);
 
     // 计算mask_out的轮廓点
-    unsigned char *mask_out_host = segment_cache_.cpu(bytes_of_mask_out);
-    checkRuntime(cudaMemcpyAsync(mask_out_host, mask_out_device, segment_cache_.gpu_bytes(), cudaMemcpyDeviceToHost, stream_));
-    cudaStreamSynchronize(stream_);
-    cv::Mat mask_out_mat(mask_out_height, mask_out_width, CV_8UC1, mask_out_host); 
+    cv::Mat mask_out_mat(mask_out_height, mask_out_width, CV_8UC1, mask_out_host_ib); 
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(mask_out_mat, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-    
+    // cv::imwrite("mask_out-new.png", mask_out_mat);
+    // printf("Found %lu contours in the mask output.\n", contours.size());
     int box_idx = 0;
     for (const auto &contour : contours)
     {   
@@ -304,13 +301,26 @@ void UviadModelImpl::decode_segment(int ib, float *parray, const cv::Mat &input,
         if(contour.size() < 3) continue;
         cv::Rect bbox = cv::boundingRect(contour);
         auto roi = mask_head_predict_mat(bbox);
-        if (cv::countNonZero(roi) == 0 || bbox.width <= 3 || bbox.height <= 3) continue; // 如果ROI内没有有效的mask，则跳过该框
+        auto roi_mask = mask_out_mat(bbox);
+        if (cv::countNonZero(roi) == 0 || bbox.width < 3 || bbox.height < 3)
+        {
+            // cv::imwrite("roi_" + std::to_string(box_idx) + "_empty.png", roi_mask);
+            printf("box_idx: %d, empty roi or too small, skip\n", box_idx);
+            continue;
+        }; // 如果ROI内没有有效的mask，则跳过该框
         // cv::imwrite("roi_" + std::to_string(box_idx) + ".png", roi);
         cv::Point minloc, maxloc;
         double minval, maxval;
         auto meanVal = cv::mean(roi, roi!=0);
-        if (float(meanVal.val[0] / 255.0) < confidence_threshold_) continue; // 如果ROI内的平均置信度低于阈值，则跳过该框
         cv::minMaxLoc(roi, &minval, &maxval, &minloc, &maxloc);
+        if (float(maxval / 255.0) < confidence_threshold_) 
+        {
+            // cv::imwrite("roi_" + std::to_string(box_idx) + "_below_threshold.png", roi_mask);
+            printf("box_idx: %d, mean confidence: %.4f, below threshold: %.4f, skip\n", box_idx, float(maxval / 255.0), confidence_threshold_);
+            continue; // 如果ROI内的平均置信度低于阈值，则跳过该框
+        }
+        // cv::imwrite("roi_" + std::to_string(box_idx) + ".png", roi_mask);
+
     
         // 将检测框信息写入输出数组
         float *pbox = parray + box_idx * num_box_element_;
@@ -318,7 +328,7 @@ void UviadModelImpl::decode_segment(int ib, float *parray, const cv::Mat &input,
         affine_project(d2i, bbox.x, bbox.y, &left, &top);
         affine_project(d2i, bbox.x + bbox.width, bbox.y + bbox.height, &right, &bottom);
         // printf("box_idx: %d, left: %.2f, top: %.2f, right: %.2f, bottom: %.2f, score: %.4f\n", box_idx, float(bbox.x), float(bbox.y), float(bbox.x + bbox.width), float(bbox.y + bbox.height), float(maxval / 255.0));
-        printf("box_idx: %d, left: %.2f, top: %.2f, right: %.2f, bottom: %.2f, score: %.4f\n", box_idx, left, top, right, bottom, float(maxval / 255.0));
+        // printf("box_idx: %d, left: %.2f, top: %.2f, right: %.2f, bottom: %.2f, score: %.4f, max : %.4f\n", box_idx, left, top, right, bottom, float(maxval / 255.0), float(maxval / 255.0));
         pbox[0] = left;
         pbox[1] = top;
         pbox[2] = right;
@@ -331,20 +341,26 @@ void UviadModelImpl::decode_segment(int ib, float *parray, const cv::Mat &input,
         box_idx++;   
         
 
-        float box_width = bbox.width;
-        float box_height = bbox.height;
-        float original_box_width = right - left;
-        float original_box_height = bottom - top; 
-  
+        int box_width = bbox.width;
+        int box_height = bbox.height;
+        int original_box_width = right - left;
+        int original_box_height = bottom - top; 
+
         original_box_segment_cache_.gpu(original_box_width * original_box_height);
-        if(!roi.isContinuous()) 
-            roi = roi.clone();
-        cv::Mat roi_float;
-        roi.convertTo(roi_float, CV_32F, 1.0 / 255.0);
-        box_segment_cache_.gpu(roi_float.total());  
+        if(!roi_mask.isContinuous()) 
+            roi_mask = roi_mask.clone();
+        cv::Mat roi_mask_float;
+        roi_mask.convertTo(roi_mask_float, CV_32F, 1.0 / 255.0);
+        box_segment_cache_.gpu(roi_mask_float.total());  
         float *box_segment_device = box_segment_cache_.gpu();
-        checkRuntime(cudaMemcpyAsync(box_segment_device, roi_float.data, roi_float.total() * sizeof(float), cudaMemcpyHostToDevice, stream_));
+        checkRuntime(cudaMemcpyAsync(box_segment_device, roi_mask_float.data, roi_mask_float.total() * sizeof(float), cudaMemcpyHostToDevice, stream_));
         unsigned char *original_box_mask_out_device = original_box_segment_cache_.gpu();
+        // TRT::Tensor box_seg_device(TRT::DataType::Float);
+        // box_seg_device.resize({roi_float.rows, roi_float.cols});
+        // // checkRuntime(cudaMemcpyAsync(box_seg_device.gpu<float>(), roi_float.data, roi_float.total() * sizeof(float), cudaMemcpyHostToDevice, stream_));
+        // checkRuntime(cudaMemcpyAsync(box_seg_device.gpu<float>(), box_segment_device, box_segment_cache_.gpu_bytes(), cudaMemcpyDeviceToDevice, stream_));
+        // box_seg_device.save_to_file(std::to_string(box_idx) +"_box_segment.bin");
+        
         // 将mask从网络输入尺寸仿射变换回原图尺寸
         warp_affine_bilinear_single_channel_mask_plane(box_segment_device,
                                                         box_width,
@@ -357,13 +373,17 @@ void UviadModelImpl::decode_segment(int ib, float *parray, const cv::Mat &input,
                                                         0,
                                                         stream_);
         seg = std::make_shared<object::SegmentMap>(original_box_width, original_box_height);
-        unsigned char *original_mask_out_host = seg->data;
         checkRuntime(cudaMemcpyAsync(
-            original_mask_out_host,
+            seg->data,
             original_box_mask_out_device,
             original_box_segment_cache_.gpu_bytes(),
             cudaMemcpyDeviceToHost,
             stream_));
+        
+        // TRT::Tensor orig_box_seg_device(TRT::DataType::UInt8);
+        // orig_box_seg_device.resize({original_box_height, original_box_width});
+        // checkRuntime(cudaMemcpyAsync(orig_box_seg_device.gpu<float>(), original_box_mask_out_device, original_box_segment_cache_.gpu_bytes(), cudaMemcpyDeviceToDevice, stream_));
+        // orig_box_seg_device.save_to_file(std::to_string(box_idx) +"_orig_box_segment.bin");
         object::Box seg_box(left, top, right, bottom, float(maxval / 255.0), 0);
         object::SegmentationInstance result_object_box(seg_box, seg);
         output.emplace_back(std::move(result_object_box));

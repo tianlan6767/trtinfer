@@ -121,8 +121,6 @@ public:
     }
 };
 
-
-
 }}//! end namespace pybind11::detail
 
 
@@ -358,6 +356,7 @@ PYBIND11_MODULE(tinfer, m){
         .value("YOLO11SEGSAHI", ModelType::YOLO11SEGSAHI)
         .value("YOLO11OBBSAHI", ModelType::YOLO11OBBSAHI)
         .value("CLS", ModelType::CLS)
+        .value("UVIAD", ModelType::UVIAD)
         .export_values();
 
     py::class_<object::Box>(m, "Box")
@@ -390,6 +389,7 @@ PYBIND11_MODULE(tinfer, m){
                 << ")";
             return oss.str();
         });
+
     py::class_<object::OBBox>(m, "OBBox")
         .def_readwrite("cx", &object::OBBox::cx)
         .def_readwrite("cy", &object::OBBox::cy)
