@@ -114,34 +114,38 @@ else()
 endif()
 
 # -------------------- Include --------------------
+
+set(PROJECT_INCLUDE_DIRS
+    ${SRC_DIR}
+    ${SRC_DIR}/common
+    ${SRC_DIR}/pybind11
+    ${SRC_DIR}/kernel
+    ${SRC_DIR}/trt
+    ${TensorRT_DIR}/include
+    ${CUDA_TOOLKIT_ROOT_DIR}/include
+    ${CUDNN_DIR}/include
+    ${SPDLOG_DIR}/include
+)
+
 if(WIN32)
-    target_include_directories(cvter PRIVATE
-        "${SRC_DIR}"
-        "${SRC_DIR}/common"
-        "${SRC_DIR}/pybind11"
-        "${SRC_DIR}/kernel"
-        "${SRC_DIR}/trt"
-        "${TensorRT_DIR}/include"
-        "${OpenCV_DIR}/include"
-        "${CUDA_TOOLKIT_ROOT_DIR}/include"
-        "${CUDNN_DIR}/include"
-        "${PYTHON_DIR}/include"
-        "${SPDLOG_DIR}/include"
+
+    list(APPEND PROJECT_INCLUDE_DIRS
+        ${OpenCV_DIR}/include
+        ${PYTHON_DIR}/include
     )
+
 else()
-    target_include_directories(cvter PRIVATE
-            "${SRC_DIR}"
-            "${SRC_DIR}/common"
-            "${SRC_DIR}/pybind11"
-            "${SRC_DIR}/kernel"
-            "${SRC_DIR}/trt"
-            "${TensorRT_DIR}/include"
-            "${OpenCV_DIR}/include/opencv4"
-            "${CUDA_TOOLKIT_ROOT_DIR}/include"
-            "${CUDNN_DIR}/include"
-            "${SPDLOG_DIR}/include"
-        )
+
+    list(APPEND PROJECT_INCLUDE_DIRS
+        ${OpenCV_DIR}/include/opencv4
+    )
+
 endif()
+
+
+target_include_directories(cvter PRIVATE
+    ${PROJECT_INCLUDE_DIRS}
+)
 
 
 # -------------------- Link directories --------------------
