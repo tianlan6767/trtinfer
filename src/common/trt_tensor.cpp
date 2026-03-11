@@ -1,4 +1,3 @@
-
 #include "trt_tensor.hpp"
 #include <algorithm>
 #include <cuda_runtime.h>
