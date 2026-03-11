@@ -1,33 +1,52 @@
 cmake_minimum_required(VERSION 3.18)
 
-
-if(UNIX)
-    # Linux / Ubuntu 固定 CUDA 路径
+if(WIN32)
+    set(CMAKE_CUDA_COMPILER "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/bin/nvcc.exe")
+else()
     set(CMAKE_CUDA_COMPILER "/usr/local/cuda-12.6/bin/nvcc" CACHE FILEPATH "CUDA compiler" FORCE)
-    set(CUDA_TOOLKIT_ROOT_DIR "/usr/local/cuda-12.6" CACHE PATH "CUDA toolkit root" FORCE)
-elseif(WIN32)
-    # Windows 可以不写，或指定你的安装路径
-    set(CMAKE_CUDA_COMPILER "D:/libs/cuda-12.6/bin/nvcc.exe" CACHE FILEPATH "CUDA compiler" FORCE)
-    set(CUDA_TOOLKIT_ROOT_DIR "D:/libs/cuda-12.6" CACHE PATH "CUDA toolkit root" FORCE)
 endif()
 
-project(trtsahi LANGUAGES CXX CUDA)
+project(cvter LANGUAGES CXX CUDA)
 
+set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
+set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
 # -------------------- 生成 compile_commands.json 给 clangd 使用 --------------------
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler -Wall --compiler-options -fPIC")
-set(CMAKE_CUDA_FLAGS_RELEASE "-O3")
 
 if(UNIX)
-    # Linux / Ubuntu 特有的 nvcc 编译选项
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler -Wall")
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --compiler-options -fPIC")
-    set(CMAKE_CUDA_FLAGS_RELEASE "-O3")
+
+    set(CMAKE_CUDA_FLAGS
+        "${CMAKE_CUDA_FLAGS} -Xcompiler=-Wall,-fPIC"
+    )
+
+    set(CMAKE_CUDA_FLAGS_RELEASE
+        "${CMAKE_CUDA_FLAGS_RELEASE} -O3"
+    )
+
 elseif(WIN32)
-    # Windows + VS2019/2022 特有选项（可选）
-    # MSVC 默认开启大部分警告，-Wall 无需手动添加
-    set(CMAKE_CUDA_FLAGS_RELEASE "/O2") # 优化级别
+
+    set(CMAKE_CUDA_FLAGS
+        "${CMAKE_CUDA_FLAGS} --use-local-env -Xcompiler=/utf-8"
+    )
+
+endif()
+
+
+if(MSVC)
+
+    add_compile_options(
+        $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
+        $<$<COMPILE_LANGUAGE:CXX>:/MP>
+    )
+
+else()
+
+    add_compile_options(
+        -Wall
+        -Wextra
+    )
+
 endif()
 
 # -------------------- C++17 --------------------
@@ -35,64 +54,108 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# -------------------- CUDA C++17 --------------------
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_EXTENSIONS OFF)
+
+set(CMAKE_OBJECT_PATH_MAX 260)
+
 # -------------------- 源码目录 --------------------
-set(SRC_DIR ${CMAKE_SOURCE_DIR}/src)
+set(SRC_DIR "${CMAKE_SOURCE_DIR}/src")
 
 # -------------------- 收集源码 --------------------
-file(GLOB_RECURSE CPP_SRCS
-    ${SRC_DIR}/*.cpp
-    ${SRC_DIR}/*.h
-    ${SRC_DIR}/*.hpp
+file(GLOB_RECURSE CPP_SRCS CONFIGURE_DEPENDS
+    ${SRC_DIR}/*.cpp 
+)
+file(GLOB_RECURSE CU_SRCS CONFIGURE_DEPENDS 
+    ${SRC_DIR}/*.cu 
+)
+file(GLOB_RECURSE HEADER_SRCS CONFIGURE_DEPENDS
+    ${SRC_DIR}/*.h 
+    ${SRC_DIR}/*.hpp 
+    ${SRC_DIR}/*.cuh 
 )
 
-file(GLOB_RECURSE CU_SRCS
-    ${SRC_DIR}/*.cu
+# -------------------- 排除 3rdParty --------------------
+list(FILTER CPP_SRCS EXCLUDE REGEX ".*/3rdParty/.*")
+list(FILTER CU_SRCS EXCLUDE REGEX ".*/3rdParty/.*")
+list(FILTER HEADER_SRCS EXCLUDE REGEX ".*/3rdParty/.*")
+
+add_executable(cvter ${CPP_SRCS} ${CU_SRCS}  ${HEADER_SRCS})
+
+source_group(TREE ${SRC_DIR} FILES
+    ${CPP_SRCS}
+    ${CU_SRCS}
+    ${HEADER_SRCS}
 )
 
-add_executable(trtsahi ${CPP_SRCS} ${CU_SRCS})
 
-# -------------------- VS 层级结构 --------------------
-foreach(FILE ${CPP_SRCS} ${CU_SRCS})
-    get_filename_component(PARENT_DIR "${FILE}" DIRECTORY)
-    file(RELATIVE_PATH REL_PATH "${SRC_DIR}" "${PARENT_DIR}")
-    string(REPLACE "/" "\\" GROUP_PATH "${REL_PATH}")
-    source_group("${GROUP_PATH}" FILES "${FILE}")
-endforeach()
+set_source_files_properties(
+    ${SRC_DIR}/common/tensorrt8.cpp
+    PROPERTIES HEADER_FILE_ONLY TRUE
+)
 
 # -------------------- 手动指定依赖路径 --------------------
 if(WIN32)
-    set(CUDA_TOOLKIT_ROOT_DIR "D:/libs/cuda-12.6")
-    set(TensorRT_DIR "D:/libs/TensorRT-10.11.0.33")
-    set(OpenCV_DIR "D:/libs/opencv/build")
-    set(CUDNN_DIR "D:/libs/cudnn-9.5")
+    set(CUDA_TOOLKIT_ROOT_DIR "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9" CACHE PATH "CUDA toolkit root" FORCE)
+    set(TensorRT_DIR "D:/envs/lean/TensorRT-10.11.0.33")
+    set(OpenCV_DIR "D:/envs/lean/opencv410-office/build")
+    set(CUDNN_DIR "D:/envs/lean/cudnn-951_cuda12")
+    set(PYTHON_DIR "D:/envs/py3117")
+    set(SPDLOG_DIR "D:/work/workspace/projects/cvter/src/3rdParty/spdlog")
 else()
-    set(CUDA_TOOLKIT_ROOT_DIR "/usr/local/cuda-12.6")
+    set(CUDA_TOOLKIT_ROOT_DIR "/usr/local/cuda-12.6" CACHE PATH "CUDA toolkit root" FORCE)
     set(TensorRT_DIR "/home/ps/workspace/trt/lean/TensorRT-10.11.0.33")
     set(OpenCV_DIR "/home/ps/workspace/trt/lean/cv4110/install")
     set(CUDNN_DIR "/home/ps/workspace/trt/lean/cudnn9.5.0")
+    set(PYTHON_DIR "/usr")
+    set(SPDLOG_DIR "${SRC_DIR}/3rdParty/spdlog")
 endif()
 
 # -------------------- Include --------------------
-target_include_directories(trtsahi PRIVATE
-    ${SRC_DIR}
-    ${TensorRT_DIR}/include
-    ${OpenCV_DIR}/include/opencv4
-    ${CUDA_TOOLKIT_ROOT_DIR}/include
-    ${CUDNN_DIR}/include
-)
+if(WIN32)
+    target_include_directories(cvter PRIVATE
+        "${SRC_DIR}"
+        "${SRC_DIR}/common"
+        "${SRC_DIR}/pybind11"
+        "${SRC_DIR}/kernel"
+        "${SRC_DIR}/trt"
+        "${TensorRT_DIR}/include"
+        "${OpenCV_DIR}/include"
+        "${CUDA_TOOLKIT_ROOT_DIR}/include"
+        "${CUDNN_DIR}/include"
+        "${PYTHON_DIR}/include"
+        "${SPDLOG_DIR}/include"
+    )
+else()
+    target_include_directories(cvter PRIVATE
+            "${SRC_DIR}"
+            "${SRC_DIR}/common"
+            "${SRC_DIR}/pybind11"
+            "${SRC_DIR}/kernel"
+            "${SRC_DIR}/trt"
+            "${TensorRT_DIR}/include"
+            "${OpenCV_DIR}/include/opencv4"
+            "${CUDA_TOOLKIT_ROOT_DIR}/include"
+            "${CUDNN_DIR}/include"
+            "${SPDLOG_DIR}/include"
+        )
+endif()
+
 
 # -------------------- Link directories --------------------
 if(WIN32)
-    link_directories(
-        ${SRC_DIR} 
-        ${TensorRT_DIR}/lib
-        ${OpenCV_DIR}/x64/vc16/lib
-        ${CUDA_TOOLKIT_ROOT_DIR}/lib/x64
-        ${CUDNN_DIR}/lib/x64
+    target_link_directories(cvter PRIVATE
+        "${SRC_DIR}"
+        "${TensorRT_DIR}/lib"
+        "${OpenCV_DIR}/x64/vc16/lib"
+        "${CUDA_TOOLKIT_ROOT_DIR}/lib/x64"
+        "${CUDNN_DIR}/lib/x64"
+        "${PYTHON_DIR}/libs"
     )
 else()
-    link_directories(
-        ${SRC_DIR} 
+    target_link_directories(cvter PRIVATE
         ${TensorRT_DIR}/lib
         ${OpenCV_DIR}/lib
         ${CUDA_TOOLKIT_ROOT_DIR}/lib64
@@ -103,15 +166,12 @@ endif()
 # -------------------- Link libraries --------------------
 if(WIN32)
     set(OPENCV_LIBS
-        opencv_core411
-        opencv_imgproc411
-        opencv_imgcodecs411
-        opencv_highgui411
+        opencv_world4100
     )
     set(TENSORRT_LIBS
-        nvinfer
-        nvinfer_plugin
-        nvonnxparser
+        nvinfer_10
+        nvinfer_plugin_10
+        nvonnxparser_10
     )
     set(CUDA_LIBS
         cudart
@@ -120,6 +180,10 @@ if(WIN32)
     set(CUDNN_LIBS
         cudnn
     )
+    set(PYTHON_LIBS
+        python311
+    )
+
 else()
     set(OPENCV_LIBS
         ${OpenCV_DIR}/lib/libopencv_core.so
@@ -142,15 +206,17 @@ else()
     )
 endif()
 
-target_link_libraries(trtsahi PRIVATE
+target_link_libraries(cvter PRIVATE
     ${OPENCV_LIBS}
     ${TENSORRT_LIBS}
     ${CUDA_LIBS}
     ${CUDNN_LIBS}
+    ${PYTHON_LIBS}
 )
 
 # -------------------- CUDA properties --------------------
-set_target_properties(trtsahi PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "75;80;86;89;90"
+
+set_target_properties(cvter PROPERTIES
+    CUDA_ARCHITECTURES "86;89"
+    CUDA_RUNTIME_LIBRARY Shared
 )
