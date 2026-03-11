@@ -14,10 +14,10 @@ namespace object
 
 struct ClsAttribute
 {
-    float score;
-    int id;
+    float score = 0.0f;
+    int id = -1;
     ClsAttribute() = default;
-    ClsAttribute(float score, int id) : score(score), id(id) {}
+    ClsAttribute(float s, int i) : score(s), id(i) {}
 };
 
 struct OBBox
