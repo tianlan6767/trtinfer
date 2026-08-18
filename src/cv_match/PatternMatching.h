@@ -23,19 +23,27 @@ namespace template_matching
 	struct s_TemplData
 	{
 		vector<Mat> vecPyramid;
+		vector<Mat> vecMask;          // 8U，空则无 mask
+		vector<Mat> vecTemplMasked;   // 32F，(T-mean)*mask
+		vector<double> vecMaskCount;
 		vector<Scalar> vecTemplMean;
 		vector<double> vecTemplNorm;
 		vector<double> vecInvArea;
 		vector<bool> vecResultEqual1;
 		bool bIsPatternLearned;
+		bool bHasMask;
 		int iBorderColor;
 		void clear()
 		{
 			vector<Mat>().swap(vecPyramid);
+			vector<Mat>().swap(vecMask);
+			vector<Mat>().swap(vecTemplMasked);
+			vector<double>().swap(vecMaskCount);
 			vector<double>().swap(vecTemplNorm);
 			vector<double>().swap(vecInvArea);
 			vector<Scalar>().swap(vecTemplMean);
 			vector<bool>().swap(vecResultEqual1);
+			bHasMask = false;
 		}
 		void resize(int iSize)
 		{
@@ -43,10 +51,14 @@ namespace template_matching
 			vecTemplNorm.resize(iSize, 0);
 			vecInvArea.resize(iSize, 1);
 			vecResultEqual1.resize(iSize, false);
+			vecMask.resize(iSize);
+			vecTemplMasked.resize(iSize);
+			vecMaskCount.resize(iSize, 0);
 		}
 		s_TemplData()
 		{
 			bIsPatternLearned = false;
+			bHasMask = false;
 		}
 	};
 	struct s_MatchParameter
@@ -78,6 +90,9 @@ namespace template_matching
 			dNewAngle = 0.0;
 
 			bPosOnBorder = false;
+			for (auto& row : vecResult)
+				for (double& v : row)
+					v = 0.0;
 		}
 		s_MatchParameter()
 		{
@@ -223,18 +238,12 @@ namespace template_matching
 		~PatternMatcher();
 		virtual int match(const cv::Mat & frame, std::vector<template_matching::MatchResult> &matchResults) override;
 
-		virtual int setTemplate(const cv::Mat& templateImage) override;
-		
-	
-	protected:
-		
+		virtual int setTemplate(const cv::Mat& templateImage, const cv::Mat& mask = cv::Mat()) override;
 
 	private:
 		s_TemplData m_TemplData;
 		bool m_bDebugMode = false;
 		bool m_bSubPixel = true;
-		bool m_bStopLayer1 = false;
-	
 	};
 
 	

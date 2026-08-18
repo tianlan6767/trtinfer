@@ -20,6 +20,8 @@ void run_cls();
 void run_dfine();
 void run_match_example();
 void run_uviad();
+void run_deeplabv3();
+void run_deeplabv3_sahi();
 
 int main()
 {

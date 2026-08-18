@@ -171,4 +171,7 @@ void classifer_softmax(float* predict, int length, int *max_index, cudaStream_t 
 void classifer_max(float* predict, int length, int *max_index, cudaStream_t stream);
 
 void normalize_and_thres_mask(float* mask, unsigned char* mask_out, int numel, float confidence_threshold, cudaStream_t stream);
+
+void semantic_argmax(const float *logits, unsigned char *class_ids, float *scores, int batch, int num_classes,
+                     int height, int width, cudaStream_t stream);
 #endif

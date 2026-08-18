@@ -644,4 +644,35 @@ __global__ void normalize_and_thres_mask_kernel(float* mask, unsigned char* mask
     mask_out[idx] = val > confidence_threshold ? 255 : 0;
 }
 
+// logits: NCHW，每个空间位置做 argmax，scores 为对应类别的 softmax
+__global__ void semantic_argmax_kernel(const float *logits, unsigned char *class_ids, float *scores, int batch,
+                                       int num_classes, int spatial)
+{
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    int total = batch * spatial;
+    if (idx >= total)
+        return;
+    const int b = idx / spatial;
+    const int s = idx - b * spatial;
+    const float *base = logits + (size_t)b * num_classes * spatial + s;
+
+    int best = 0;
+    float maxv = base[0];
+    for (int c = 1; c < num_classes; ++c)
+    {
+        float v = base[(size_t)c * spatial];
+        if (v > maxv)
+        {
+            maxv = v;
+            best = c;
+        }
+    }
+
+    float sum = 0.f;
+    for (int c = 0; c < num_classes; ++c)
+        sum += expf(base[(size_t)c * spatial] - maxv);
+    class_ids[idx] = (unsigned char)best;
+    scores[idx]    = (sum > 0.f) ? (1.f / sum) : 0.f;
+}
+
 } // namespace cuda

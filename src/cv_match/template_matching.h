@@ -34,7 +34,7 @@ namespace template_matching
 	// 匹配器类型
 	enum LIB_API MatcherType { 
 		PATTERN = 0,
-
+		SHAPE = 1,
 	};
 
 	// 匹配器参数
@@ -57,6 +57,24 @@ namespace template_matching
 
 		// 顶层金字塔最小面积
 		double minArea = 256;
+
+		// 旋转填充用模板均值（false 则恢复旧的黑/白）
+		bool meanBorder = true;
+
+		// 精搜停止层：0=原图，1=金字塔第 1 层（更快）
+		int stopLayer = 0;
+
+		// 形状匹配：边缘最小梯度（8bit 图大约等于灰度落差）
+		double edgeMinMag = 18.0;
+
+		// 形状匹配：每层最多保留的边缘点数
+		int maxEdgePoints = 320;
+
+		// 形状匹配：true=要求明暗方向一致（use_polarity）
+		bool usePolarity = true;
+
+		// 形状匹配：0~1，越大越早放弃不可能达到阈值的位置
+		double greediness = 0.9;
 
 	};
 	

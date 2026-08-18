@@ -46,3 +46,4 @@ objs
 .cache
 build
 llvm.sh
+tests/__pycache__/

@@ -21,7 +21,16 @@ enum class ModelType : int
     DFINE          = 10,
     DFINESAHI      = 11,
     CLS            = 12,
-    UVIAD          = 13
+    UVIAD          = 13,
+    DEEPLABV3      = 14,
+    DEEPLABV3SAHI  = 15
+};
+
+// DeepLab 后处理：INSTANCES=连通域框+mask（缺陷）；CLASS_MAP=整图类别 id（区域分割）
+enum class SegOutput : int
+{
+    INSTANCES = 0,
+    CLASS_MAP = 1
 };
 
 // 为枚举类添加字符串转换功能
@@ -60,6 +69,10 @@ inline std::string to_string(ModelType type)
         return "CLS";
     case ModelType::UVIAD:
         return "UVIAD";
+    case ModelType::DEEPLABV3:
+        return "DEEPLABV3";
+    case ModelType::DEEPLABV3SAHI:
+        return "DEEPLABV3SAHI";
     default:
         return "UNKNOWN";
     }
@@ -79,7 +92,9 @@ inline ModelType from_string(const std::string &str)
                                                                         {"YOLO11OBB", ModelType::YOLO11OBB},
                                                                         {"YOLO11OBBSAHI", ModelType::YOLO11OBBSAHI},
                                                                         {"CLS", ModelType::CLS},
-                                                                        {"UVIAD", ModelType::UVIAD}};
+                                                                        {"UVIAD", ModelType::UVIAD},
+                                                                        {"DEEPLABV3", ModelType::DEEPLABV3},
+                                                                        {"DEEPLABV3SAHI", ModelType::DEEPLABV3SAHI}};
 
     auto it = str2enum.find(str);
     if (it != str2enum.end())
@@ -89,6 +104,11 @@ inline ModelType from_string(const std::string &str)
     throw std::invalid_argument("Invalid ModelType string: " + str);
 }
 } // namespace ModelTypeConverter
+
+inline const char *to_string(SegOutput mode)
+{
+    return mode == SegOutput::CLASS_MAP ? "CLASS_MAP" : "INSTANCES";
+}
 
 inline std::ostream &operator<<(std::ostream &os, ModelType type)
 {
@@ -148,6 +168,7 @@ std::shared_ptr<InferBase> load(const std::string &model_path,
                                 int slice_width               = 640,
                                 int slice_height              = 640,
                                 double slice_horizontal_ratio = 0.3,
-                                double slice_vertical_ratio   = 0.3);
+                                double slice_vertical_ratio   = 0.3,
+                                SegOutput seg_output          = SegOutput::INSTANCES);
 
 #endif // INFER_HPP__

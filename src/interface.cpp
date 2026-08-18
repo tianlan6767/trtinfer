@@ -7,6 +7,7 @@
 #include "opencv2/opencv.hpp"
 #include "trt/infer.hpp"
 #include "cv_match/matcher.h"
+#include "cv_caliper/caliper.h"
 
 #define UNUSED(expr) do { (void)(expr); } while (0)
 
@@ -150,9 +151,10 @@ public:
         int slice_width               = 640,
         int slice_height              = 640,
         double slice_horizontal_ratio = 0.3,
-        double slice_vertical_ratio   = 0.3)
+        double slice_vertical_ratio   = 0.3,
+        SegOutput seg_output          = SegOutput::INSTANCES)
     {
-        instance_ = load(model_path, model_type, names, gpu_id, confidence_threshold, nms_threshold, max_batch_size, auto_slice, slice_width, slice_height, slice_horizontal_ratio, slice_vertical_ratio);
+        instance_ = load(model_path, model_type, names, gpu_id, confidence_threshold, nms_threshold, max_batch_size, auto_slice, slice_width, slice_height, slice_horizontal_ratio, slice_vertical_ratio, seg_output);
     }
 
     std::vector<std::vector<DetResult>> forwards(const std::vector<cv::Mat>& images)
@@ -300,30 +302,15 @@ public:
         }
     }
 
-    void setTemplate(const cv::Mat& templ) {
-        matcher->setTemplate(templ);
+    void setTemplate(const cv::Mat& templ, const cv::Mat& mask = cv::Mat()) {
+        matcher->setTemplate(templ, mask);
     }
 
     py::list match(const cv::Mat& img) {
         try {
-            // cv::Mat img_clone = img.clone();
             std::vector<template_matching::MatchResult> cpp_results;
             int n = matcher->match(img, cpp_results);
-
-            // std::cout << "[DEBUG] matcher->match returned " << n << " results" << std::endl;
-
-            // for (size_t i = 0; i < cpp_results.size(); ++i) {
-            //     const auto& r = cpp_results[i];
-            //     std::cout << "[DEBUG] Result " << i
-            //             << " LT=(" << r.LeftTop.x << "," << r.LeftTop.y << ")"
-            //             << " RT=(" << r.RightTop.x << "," << r.RightTop.y << ")"
-            //             << " LB=(" << r.LeftBottom.x << "," << r.LeftBottom.y << ")"
-            //             << " RB=(" << r.RightBottom.x << "," << r.RightBottom.y << ")"
-            //             << " Center=(" << r.Center.x << "," << r.Center.y << ")"
-            //             << " Angle=" << r.Angle
-            //             << " Score=" << r.Score
-            //             << std::endl;
-            // }
+            UNUSED(n);
 
             py::list py_results;
             for (auto& r : cpp_results)
@@ -336,8 +323,37 @@ public:
     }
 };
 
+class CaliperWrapper {
+public:
+    caliper::CaliperParam param;
+
+    CaliperWrapper() = default;
+    explicit CaliperWrapper(const caliper::CaliperParam& p) : param(p) {}
+
+    caliper::LineResult find_line(const cv::Mat& img, double x0, double y0, double x1, double y1,
+                                  bool search_horizontal) const
+    {
+        return caliper::findLineRect(img, x0, y0, x1, y1, search_horizontal, param);
+    }
+
+    caliper::LineResult find_line_oriented(const cv::Mat& img, double cx, double cy, double phi_deg,
+                                           double length1, double length2) const
+    {
+        return caliper::findLineOriented(img, cv::Point2d(cx, cy), phi_deg * CV_PI / 180.0,
+                                         length1, length2, param);
+    }
+
+    caliper::CircleResult find_circle(const cv::Mat& img, double cx, double cy, double radius,
+                                      double search, double start_deg, double end_deg) const
+    {
+        return caliper::findCircle(img, cv::Point2d(cx, cy), radius, search, start_deg, end_deg, param);
+    }
+};
+
 PYBIND11_MODULE(tinfer, m){
     py::class_<cv::Point2d>(m, "Point2d")
+    .def(py::init<>())
+    .def(py::init<double, double>(), py::arg("x"), py::arg("y"))
     .def_readwrite("x", &cv::Point2d::x)
     .def_readwrite("y", &cv::Point2d::y)
     .def("__repr__", [](const cv::Point2d &p){
@@ -357,6 +373,13 @@ PYBIND11_MODULE(tinfer, m){
         .value("YOLO11OBBSAHI", ModelType::YOLO11OBBSAHI)
         .value("CLS", ModelType::CLS)
         .value("UVIAD", ModelType::UVIAD)
+        .value("DEEPLABV3", ModelType::DEEPLABV3)
+        .value("DEEPLABV3SAHI", ModelType::DEEPLABV3SAHI)
+        .export_values();
+
+    py::enum_<SegOutput>(m, "SegOutput")
+        .value("INSTANCES", SegOutput::INSTANCES)
+        .value("CLASS_MAP", SegOutput::CLASS_MAP)
         .export_values();
 
     py::class_<object::Box>(m, "Box")
@@ -365,6 +388,7 @@ PYBIND11_MODULE(tinfer, m){
         .def_readwrite("right", &object::Box::right)
         .def_readwrite("bottom", &object::Box::bottom)
         .def_readwrite("score", &object::Box::score)
+        .def_readwrite("class_id", &object::Box::class_id)
         .def_readwrite("class_name", &object::Box::class_name)
         .def("__repr__", [](const object::Box &box) {
             std::ostringstream oss;
@@ -373,6 +397,7 @@ PYBIND11_MODULE(tinfer, m){
                 << ", right: " << box.right
                 << ", bottom: " << box.bottom
                 << ", score: " << box.score
+                << ", class_id: " << box.class_id
                 << ", class_name: " << box.class_name
                 << ")";
             return oss.str();
@@ -431,19 +456,20 @@ PYBIND11_MODULE(tinfer, m){
     
     
     py::class_<TrtInfer>(m, "TrtInfer")
-        .def(py::init<string, ModelType, vector<string>, int, float, float, int, bool, int, int, double, double>(),
+        .def(py::init<string, ModelType, vector<string>, int, float, float, int, bool, int, int, double, double, SegOutput>(),
             py::arg("model_path"),
             py::arg("model_type"),
             py::arg("names"),
-            py::arg("gpu_id"),
-            py::arg("confidence_threshold"),
-            py::arg("nms_threshold"),
-            py::arg("max_batch_size"),
-            py::arg("auto_slice"),
-            py::arg("slice_width"),
-            py::arg("slice_height"),
-            py::arg("slice_horizontal_ratio"),
-            py::arg("slice_vertical_ratio"))
+            py::arg("gpu_id") = 0,
+            py::arg("confidence_threshold") = 0.5f,
+            py::arg("nms_threshold") = 0.45f,
+            py::arg("max_batch_size") = 32,
+            py::arg("auto_slice") = true,
+            py::arg("slice_width") = 640,
+            py::arg("slice_height") = 640,
+            py::arg("slice_horizontal_ratio") = 0.3,
+            py::arg("slice_vertical_ratio") = 0.3,
+            py::arg("seg_output") = SegOutput::INSTANCES)
     .def_property_readonly("valid", &TrtInfer::valid)
     .def("forwards", &TrtInfer::forwards, py::arg("images"));
 
@@ -452,6 +478,7 @@ PYBIND11_MODULE(tinfer, m){
     // -----------------------------
     py::enum_<template_matching::MatcherType>(m, "MatcherType")
         .value("PATTERN", template_matching::MatcherType::PATTERN)
+        .value("SHAPE", template_matching::MatcherType::SHAPE)
         .export_values();
     
     // MatcherParam 结构体
@@ -463,6 +490,12 @@ PYBIND11_MODULE(tinfer, m){
         .def_readwrite("iouThreshold", &template_matching::MatcherParam::iouThreshold)
         .def_readwrite("angle", &template_matching::MatcherParam::angle)
         .def_readwrite("minArea", &template_matching::MatcherParam::minArea)
+        .def_readwrite("meanBorder", &template_matching::MatcherParam::meanBorder)
+        .def_readwrite("stopLayer", &template_matching::MatcherParam::stopLayer)
+        .def_readwrite("edgeMinMag", &template_matching::MatcherParam::edgeMinMag)
+        .def_readwrite("maxEdgePoints", &template_matching::MatcherParam::maxEdgePoints)
+        .def_readwrite("usePolarity", &template_matching::MatcherParam::usePolarity)
+        .def_readwrite("greediness", &template_matching::MatcherParam::greediness)
         .def("__repr__", [](const template_matching::MatcherParam &param) {
             std::ostringstream oss;
             oss << "MatcherParam(matcherType: " << static_cast<int>(param.matcherType)
@@ -471,6 +504,12 @@ PYBIND11_MODULE(tinfer, m){
                 << ", iouThreshold: " << param.iouThreshold
                 << ", angle: " << param.angle
                 << ", minArea: " << param.minArea
+                << ", meanBorder: " << (param.meanBorder ? "true" : "false")
+                << ", stopLayer: " << param.stopLayer
+                << ", edgeMinMag: " << param.edgeMinMag
+                << ", maxEdgePoints: " << param.maxEdgePoints
+                << ", usePolarity: " << (param.usePolarity ? "true" : "false")
+                << ", greediness: " << param.greediness
                 << ")";
             return oss.str();
         });
@@ -502,6 +541,134 @@ PYBIND11_MODULE(tinfer, m){
 
     py::class_<MatcherWrapper>(m, "MatcherWrapper")
     .def(py::init<const template_matching::MatcherParam&>())
-    .def("setTemplate", &MatcherWrapper::setTemplate)         // 新增方法
+    .def("setTemplate", &MatcherWrapper::setTemplate, py::arg("templ"), py::arg("mask") = cv::Mat())
     .def("match", &MatcherWrapper::match);
+
+    // -----------------------------
+    // 卡尺：矩形找直线 / 环形找圆
+    // -----------------------------
+    py::enum_<caliper::Polarity>(m, "CaliperPolarity")
+        .value("DarkToLight", caliper::Polarity::DarkToLight)
+        .value("LightToDark", caliper::Polarity::LightToDark)
+        .value("Both", caliper::Polarity::Both)
+        .export_values();
+
+    py::enum_<caliper::EdgeSelect>(m, "CaliperSelect")
+        .value("First", caliper::EdgeSelect::First)
+        .value("Last", caliper::EdgeSelect::Last)
+        .value("Strongest", caliper::EdgeSelect::Strongest)
+        .export_values();
+
+    py::class_<caliper::CaliperParam>(m, "CaliperParam")
+        .def(py::init<>())
+        .def_readwrite("polarity", &caliper::CaliperParam::polarity)
+        .def_readwrite("select", &caliper::CaliperParam::select)
+        .def_readwrite("projection", &caliper::CaliperParam::projection)
+        .def_readwrite("numCalipers", &caliper::CaliperParam::numCalipers)
+        .def_readwrite("stride", &caliper::CaliperParam::stride)
+        .def_readwrite("contrast", &caliper::CaliperParam::contrast)
+        .def_readwrite("sigma", &caliper::CaliperParam::sigma)
+        .def_readwrite("outlierRatio", &caliper::CaliperParam::outlierRatio)
+        .def_readwrite("minPoints", &caliper::CaliperParam::minPoints)
+        .def_readwrite("radialInward", &caliper::CaliperParam::radialInward)
+        .def("__repr__", [](const caliper::CaliperParam& p) {
+            std::ostringstream oss;
+            oss << "CaliperParam(polarity=" << static_cast<int>(p.polarity)
+                << ", select=" << static_cast<int>(p.select)
+                << ", projection=" << p.projection
+                << ", numCalipers=" << p.numCalipers
+                << ", stride=" << p.stride
+                << ", contrast=" << p.contrast
+                << ", sigma=" << p.sigma
+                << ", outlierRatio=" << p.outlierRatio
+                << ", minPoints=" << p.minPoints
+                << ", radialInward=" << (p.radialInward ? "true" : "false")
+                << ")";
+            return oss.str();
+        });
+
+    py::class_<caliper::LineResult>(m, "LineResult")
+        .def_readwrite("found", &caliper::LineResult::found)
+        .def_readwrite("p1", &caliper::LineResult::p1)
+        .def_readwrite("p2", &caliper::LineResult::p2)
+        .def_readwrite("center", &caliper::LineResult::center)
+        .def_readwrite("angle", &caliper::LineResult::angle)
+        .def_readwrite("rms", &caliper::LineResult::rms)
+        .def_readwrite("length", &caliper::LineResult::length)
+        .def_readwrite("numPoints", &caliper::LineResult::numPoints)
+        .def_readwrite("numInliers", &caliper::LineResult::numInliers)
+        .def_readwrite("points", &caliper::LineResult::points)
+        .def_readwrite("inliers", &caliper::LineResult::inliers)
+        .def("__repr__", [](const caliper::LineResult& r) {
+            std::ostringstream oss;
+            oss << "LineResult(found=" << (r.found ? "true" : "false")
+                << ", p1=(" << r.p1.x << "," << r.p1.y << ")"
+                << ", p2=(" << r.p2.x << "," << r.p2.y << ")"
+                << ", angle=" << r.angle
+                << ", rms=" << r.rms
+                << ", length=" << r.length
+                << ", n=" << r.numInliers << "/" << r.numPoints
+                << ")";
+            return oss.str();
+        });
+
+    py::class_<caliper::CircleResult>(m, "CircleResult")
+        .def_readwrite("found", &caliper::CircleResult::found)
+        .def_readwrite("center", &caliper::CircleResult::center)
+        .def_readwrite("radius", &caliper::CircleResult::radius)
+        .def_readwrite("rms", &caliper::CircleResult::rms)
+        .def_readwrite("numPoints", &caliper::CircleResult::numPoints)
+        .def_readwrite("numInliers", &caliper::CircleResult::numInliers)
+        .def_readwrite("points", &caliper::CircleResult::points)
+        .def_readwrite("inliers", &caliper::CircleResult::inliers)
+        .def("__repr__", [](const caliper::CircleResult& r) {
+            std::ostringstream oss;
+            oss << "CircleResult(found=" << (r.found ? "true" : "false")
+                << ", center=(" << r.center.x << "," << r.center.y << ")"
+                << ", r=" << r.radius
+                << ", rms=" << r.rms
+                << ", n=" << r.numInliers << "/" << r.numPoints
+                << ")";
+            return oss.str();
+        });
+
+    py::class_<CaliperWrapper>(m, "CaliperWrapper")
+        .def(py::init<>())
+        .def(py::init<const caliper::CaliperParam&>(), py::arg("param"))
+        .def_readwrite("param", &CaliperWrapper::param)
+        .def("find_line", &CaliperWrapper::find_line,
+             py::arg("image"), py::arg("x0"), py::arg("y0"), py::arg("x1"), py::arg("y1"),
+             py::arg("search_horizontal") = true)
+        .def("find_line_oriented", &CaliperWrapper::find_line_oriented,
+             py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("phi_deg"),
+             py::arg("length1"), py::arg("length2"))
+        .def("find_circle", &CaliperWrapper::find_circle,
+             py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("radius"),
+             py::arg("search") = 15.0, py::arg("start_deg") = 0.0, py::arg("end_deg") = 360.0);
+
+    m.def("find_line",
+          [](const cv::Mat& img, double x0, double y0, double x1, double y1,
+             bool search_horizontal, const caliper::CaliperParam& param) {
+              return caliper::findLineRect(img, x0, y0, x1, y1, search_horizontal, param);
+          },
+          py::arg("image"), py::arg("x0"), py::arg("y0"), py::arg("x1"), py::arg("y1"),
+          py::arg("search_horizontal") = true, py::arg("param") = caliper::CaliperParam());
+
+    m.def("find_line_oriented",
+          [](const cv::Mat& img, double cx, double cy, double phi_deg, double length1, double length2,
+             const caliper::CaliperParam& param) {
+              return caliper::findLineOriented(img, cv::Point2d(cx, cy), phi_deg * CV_PI / 180.0,
+                                               length1, length2, param);
+          },
+          py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("phi_deg"),
+          py::arg("length1"), py::arg("length2"), py::arg("param") = caliper::CaliperParam());
+
+    m.def("find_circle",
+          [](const cv::Mat& img, double cx, double cy, double radius, double search,
+             double start_deg, double end_deg, const caliper::CaliperParam& param) {
+              return caliper::findCircle(img, cv::Point2d(cx, cy), radius, search, start_deg, end_deg, param);
+          },
+          py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("radius"),
+          py::arg("search") = 15.0, py::arg("start_deg") = 0.0, py::arg("end_deg") = 360.0,
+          py::arg("param") = caliper::CaliperParam());
 };

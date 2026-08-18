@@ -109,6 +109,8 @@ __global__ void decode_dfine_kernel(
 __global__ void softmax_kernel(float* predict, int length, int *max_index);
 __global__ void max_kernel(float* predict, int length, int *max_index);
 __global__ void normalize_and_thres_mask_kernel(float* mask, unsigned char* mask_out, int numel, float confidence_threshold);
+__global__ void semantic_argmax_kernel(const float *logits, unsigned char *class_ids, float *scores, int batch,
+                                       int num_classes, int spatial);
 
 } // namespace cuda
 

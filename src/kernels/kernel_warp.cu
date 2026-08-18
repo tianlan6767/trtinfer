@@ -383,3 +383,14 @@ void normalize_and_thres_mask(float* mask, unsigned char* mask_out, int numel, f
     auto block = block_dims(numel);
     checkKernel(cuda::normalize_and_thres_mask_kernel<<<grid, block, block.x * sizeof(float), stream>>>(mask, mask_out, numel, confidence_threshold));
 }
+
+void semantic_argmax(const float *logits, unsigned char *class_ids, float *scores, int batch, int num_classes,
+                     int height, int width, cudaStream_t stream)
+{
+    const int spatial = height * width;
+    const int total   = batch * spatial;
+    auto grid         = grid_dims(total);
+    auto block        = block_dims(total);
+    checkKernel(cuda::semantic_argmax_kernel<<<grid, block, 0, stream>>>(logits, class_ids, scores, batch, num_classes,
+                                                                         spatial));
+}

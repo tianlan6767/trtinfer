@@ -4,8 +4,19 @@
 #include <arm_neon.h>
 #endif
 
+#include <cmath>
+#include <algorithm>
+#include <omp.h>
+
 
 namespace template_matching {
+
+	namespace {
+		bool isFinitePoint(const Point2d& pt)
+		{
+			return std::isfinite(pt.x) && std::isfinite(pt.y);
+		}
+	}
 
 	int GetTopLayer(Mat* matTempl, int iMinDstLength)
 	{
@@ -20,37 +31,80 @@ namespace template_matching {
 		return iTopLayer;
 	}
 
-	void LearnPattern(s_TemplData& m_TemplData, Mat& m_matDst, double& m_iMinReduceArea)
+	void LearnPattern(s_TemplData& m_TemplData, Mat& m_matDst, double& m_iMinReduceArea, const Mat& mask)
 	{
 		m_TemplData.clear();
 
 		int iTopLayer = GetTopLayer(&m_matDst, (int)sqrt((double)m_iMinReduceArea));
 		buildPyramid(m_matDst, m_TemplData.vecPyramid, iTopLayer);
 		s_TemplData* templData = &m_TemplData;
-		templData->iBorderColor = mean(m_matDst).val[0] < 128 ? 255 : 0;
 		int iSize = templData->vecPyramid.size();
 		templData->resize(iSize);
 
+		Mat maskFull;
+		templData->bHasMask = false;
+		if (!mask.empty())
+		{
+			if (mask.size() != m_matDst.size() || mask.channels() != 1)
+			{
+				templData->clear();
+				templData->bIsPatternLearned = false;
+				return;
+			}
+			maskFull = mask.clone();
+			if (maskFull.depth() != CV_8U)
+				maskFull.convertTo(maskFull, CV_8U);
+			threshold(maskFull, maskFull, 0, 255, THRESH_BINARY);
+			templData->bHasMask = countNonZero(maskFull) > 0;
+		}
+
+		Scalar fullMean = mean(m_matDst, templData->bHasMask ? maskFull : Mat());
+		templData->iBorderColor = fullMean.val[0] < 128 ? 255 : 0;
+
 		for (int i = 0; i < iSize; i++)
 		{
+			Mat layerMask;
+			if (templData->bHasMask)
+			{
+				resize(maskFull, layerMask, templData->vecPyramid[i].size(), 0, 0, INTER_NEAREST);
+				threshold(layerMask, layerMask, 0, 255, THRESH_BINARY);
+				templData->vecMask[i] = layerMask;
+			}
+
 			double invArea = 1. / ((double)templData->vecPyramid[i].rows * templData->vecPyramid[i].cols);
 			Scalar templMean, templSdv;
 			double templNorm = 0, templSum2 = 0;
 
-			meanStdDev(templData->vecPyramid[i], templMean, templSdv);
-			templNorm = templSdv[0] * templSdv[0] + templSdv[1] * templSdv[1] + templSdv[2] * templSdv[2] + templSdv[3] * templSdv[3];
-
-			if (templNorm < DBL_EPSILON)
+			if (templData->bHasMask)
 			{
-				templData->vecResultEqual1[i] = true;
+				int n = countNonZero(layerMask);
+				templData->vecMaskCount[i] = (double)std::max(n, 1);
+				templMean = mean(templData->vecPyramid[i], layerMask);
+				Mat f32, tm;
+				templData->vecPyramid[i].convertTo(f32, CV_32F);
+				subtract(f32, Scalar(templMean[0]), tm);
+				tm.setTo(0, layerMask == 0);
+				templData->vecTemplMasked[i] = tm;
+				templNorm = (double)norm(tm, NORM_L2);
+				if (templNorm < DBL_EPSILON)
+					templData->vecResultEqual1[i] = true;
 			}
-			templSum2 = templNorm + templMean[0] * templMean[0] + templMean[1] * templMean[1] + templMean[2] * templMean[2] + templMean[3] * templMean[3];
+			else
+			{
+				meanStdDev(templData->vecPyramid[i], templMean, templSdv);
+				templNorm = templSdv[0] * templSdv[0] + templSdv[1] * templSdv[1] + templSdv[2] * templSdv[2] + templSdv[3] * templSdv[3];
+
+				if (templNorm < DBL_EPSILON)
+				{
+					templData->vecResultEqual1[i] = true;
+				}
+				templSum2 = templNorm + templMean[0] * templMean[0] + templMean[1] * templMean[1] + templMean[2] * templMean[2] + templMean[3] * templMean[3];
 
 
-			templSum2 /= invArea;
-			templNorm = std::sqrt(templNorm);
-			templNorm /= std::sqrt(invArea); // care of accuracy here
-
+				templSum2 /= invArea;
+				templNorm = std::sqrt(templNorm);
+				templNorm /= std::sqrt(invArea); // care of accuracy here
+			}
 
 			templData->vecInvArea[i] = invArea;
 			templData->vecTemplMean[i] = templMean;
@@ -297,15 +351,67 @@ namespace template_matching {
 		}
 	}
 
+	void MatchTemplateMasked(cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer)
+	{
+		if (pTemplData->vecResultEqual1[iLayer])
+		{
+			matResult.create(matSrc.rows - pTemplData->vecPyramid[iLayer].rows + 1,
+				matSrc.cols - pTemplData->vecPyramid[iLayer].cols + 1, CV_32FC1);
+			matResult.setTo(1);
+			return;
+		}
+		Mat src32, mask32, src2, num, sumI, sumI2;
+		matSrc.convertTo(src32, CV_32F);
+		pTemplData->vecMask[iLayer].convertTo(mask32, CV_32F, 1.0 / 255.0);
+		multiply(src32, src32, src2);
+		matchTemplate(src32, pTemplData->vecTemplMasked[iLayer], num, TM_CCORR);
+		matchTemplate(src32, mask32, sumI, TM_CCORR);
+		matchTemplate(src2, mask32, sumI2, TM_CCORR);
+
+		const double n = std::max(1.0, pTemplData->vecMaskCount[iLayer]);
+		const double tnorm = pTemplData->vecTemplNorm[iLayer];
+		matResult.create(num.size(), CV_32FC1);
+		for (int y = 0; y < num.rows; ++y)
+		{
+			const float* pn = num.ptr<float>(y);
+			const float* pi = sumI.ptr<float>(y);
+			const float* p2 = sumI2.ptr<float>(y);
+			float* po = matResult.ptr<float>(y);
+			for (int x = 0; x < num.cols; ++x)
+			{
+				const double meanI = pi[x] / n;
+				double varI = p2[x] - n * meanI * meanI;
+				if (varI < 0)
+					varI = 0;
+				double den = std::sqrt(varI) * tnorm;
+				double v = pn[x];
+				if (den <= 1e-12)
+					po[x] = 0.f;
+				else if (std::fabs(v) < den)
+					po[x] = (float)(v / den);
+				else if (std::fabs(v) < den * 1.125)
+					po[x] = v > 0 ? 1.f : -1.f;
+				else
+					po[x] = 0.f;
+			}
+		}
+	}
+
 	void MatchTemplate(cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, bool bUseSIMD)
 	{
+		if (pTemplData->bHasMask)
+		{
+			MatchTemplateMasked(matSrc, pTemplData, matResult, iLayer);
+			return;
+		}
+		// 手写 SIMD 按 cols 跨行，忽略 step，默认不用；OpenCV 内部已有 SIMD/FFT
 		if (bUseSIMD)
 		{
-			//From ImageShop
 			matResult.create(matSrc.rows - pTemplData->vecPyramid[iLayer].rows + 1,
 				matSrc.cols - pTemplData->vecPyramid[iLayer].cols + 1, CV_32FC1);
 			matResult.setTo(0);
 			cv::Mat& matTemplate = pTemplData->vecPyramid[iLayer];
+			const size_t srcStep = matSrc.step1();
 
 			int  t_r_end = matTemplate.rows, t_r = 0;
 			for (int r = 0; r < matResult.rows; r++)
@@ -317,21 +423,16 @@ namespace template_matching {
 				{
 					r_template = matTemplate.ptr<uchar>();
 					r_sub_source = r_source;
-					for (t_r = 0; t_r < t_r_end; ++t_r, r_sub_source += matSrc.cols, r_template += matTemplate.cols)
+					for (t_r = 0; t_r < t_r_end; ++t_r, r_sub_source += srcStep, r_template += matTemplate.cols)
 					{
 						*r_matResult = *r_matResult + IM_Conv_SIMD(r_template, r_sub_source, matTemplate.cols);
 					}
 				}
 			}
-			//From ImageShop
 		}
 		else
 			matchTemplate(matSrc, pTemplData->vecPyramid[iLayer], matResult, CV_TM_CCORR);
 
-		/*Mat diff;
-		absdiff(matResult, matResult, diff);
-		double dMaxValue;
-		minMaxLoc(diff, 0, &dMaxValue, 0,0);*/
 		CCOEFF_Denominator(matSrc, pTemplData, matResult, iLayer);
 	}
 
@@ -379,7 +480,7 @@ namespace template_matching {
 	bool compareScoreBig2Small(const s_MatchParameter& lhs, const s_MatchParameter& rhs) { return  lhs.dMatchScore > rhs.dMatchScore; }
 	bool comparePtWithAngle(const pair<Point2f, double> lhs, const pair<Point2f, double> rhs) { return lhs.second < rhs.second; }
 
-	void GetRotatedROI(Mat& matSrc, Size size, Point2f ptLT, double dAngle, Mat& matROI)
+	void GetRotatedROI(Mat& matSrc, Size size, Point2f ptLT, double dAngle, Mat& matROI, Scalar borderFill)
 	{
 		double dAngle_radian = dAngle * D2R;
 		Point2f ptC((matSrc.cols - 1) / 2.0f, (matSrc.rows - 1) / 2.0f);
@@ -390,16 +491,16 @@ namespace template_matching {
 		Mat rMat = getRotationMatrix2D(ptC, dAngle, 1);
 		rMat.at<double>(0, 2) -= ptLT_rotate.x - 3;
 		rMat.at<double>(1, 2) -= ptLT_rotate.y - 3;
-		//平移旋轉矩陣(0, 2) (1, 2)的減，為旋轉後的圖形偏移，-= ptLT_rotate.x - 3 代表旋轉後的圖形往-X方向移動ptLT_rotate.x - 3
-		//Debug
-
-		//Debug
-		warpAffine(matSrc, matROI, rMat, sizePadding);
+		warpAffine(matSrc, matROI, rMat, sizePadding, INTER_LINEAR, BORDER_CONSTANT, borderFill);
 	}
 
 	bool SubPixEsimation(vector<s_MatchParameter>* vec, double* dNewX, double* dNewY, double* dNewAngle, double dAngleStep, int iMaxScoreIndex)
 	{
 		//Az=S, (A.T)Az=(A.T)s, z = ((A.T)A).inv (A.T)s
+		if (vec == nullptr || vec->empty())
+			return false;
+		if (iMaxScoreIndex < 1 || iMaxScoreIndex + 1 >= (int)vec->size())
+			return false;
 
 		Mat matA(27, 10, CV_64F);
 		Mat matZ(10, 1, CV_64F);
@@ -408,6 +509,8 @@ namespace template_matching {
 		double dX_maxScore = (*vec)[iMaxScoreIndex].pt.x;
 		double dY_maxScore = (*vec)[iMaxScoreIndex].pt.y;
 		double dTheata_maxScore = (*vec)[iMaxScoreIndex].dMatchAngle;
+		if (!std::isfinite(dX_maxScore) || !std::isfinite(dY_maxScore) || !std::isfinite(dTheata_maxScore))
+			return false;
 		int iRow = 0;
 		/*for (int x = -1; x <= 1; x++)
 		{
@@ -453,22 +556,33 @@ namespace template_matching {
 		//| y* | = | k3 2k1 k5 |   | -k7 |
 		//[ t* ] = [ k4 k5 2k2 ]   [ -k8 ]
 
-		//solve (matA, matS, matZ, DECOMP_SVD);
-		matZ = (matA.t() * matA).inv() * matA.t() * matS;
+		Mat matAtA = matA.t() * matA;
+		Mat matAtS = matA.t() * matS;
+		if (!solve(matAtA, matAtS, matZ, DECOMP_SVD))
+			return false;
+
 		Mat matZ_t;
 		transpose(matZ, matZ_t);
 		double* dZ = matZ_t.ptr<double>(0);
+		for (int i = 0; i < 10; ++i)
+		{
+			if (!std::isfinite(dZ[i]))
+				return false;
+		}
+
 		Mat matK1 = (Mat_<double>(3, 3) <<
 			(2 * dZ[0]), dZ[3], dZ[4],
 			dZ[3], (2 * dZ[1]), dZ[5],
 			dZ[4], dZ[5], (2 * dZ[2]));
 		Mat matK2 = (Mat_<double>(3, 1) << -dZ[6], -dZ[7], -dZ[8]);
-		Mat matDelta = matK1.inv() * matK2;
+		Mat matDelta;
+		if (!solve(matK1, matK2, matDelta, DECOMP_SVD))
+			return false;
 
 		*dNewX = matDelta.at<double>(0, 0);
 		*dNewY = matDelta.at<double>(1, 0);
 		*dNewAngle = matDelta.at<double>(2, 0) * R2D;
-		return true;
+		return std::isfinite(*dNewX) && std::isfinite(*dNewY) && std::isfinite(*dNewAngle);
 	}
 
 	void FilterWithScore(vector<s_MatchParameter>* vec, double dScore)
@@ -693,51 +807,63 @@ namespace template_matching {
 
 		Size sizePat = pTemplData->vecPyramid[iTopLayer].size();
 		bool bCalMaxByBlock = (vecMatSrcPyr[iTopLayer].size().area() / sizePat.area() > 500) && matchParam_.maxCount > 10;
-		for (int i = 0; i < iSize; i++)
+		const Scalar borderFill = matchParam_.meanBorder
+			? Scalar(pTemplData->vecTemplMean[0][0])
+			: Scalar(pTemplData->iBorderColor);
+
+#pragma omp parallel
 		{
-			Mat matRotatedSrc, matR = getRotationMatrix2D(ptCenter, vecAngles[i], 1);
-			Mat matResult;
-			Point ptMaxLoc;
-			double dValue, dMaxVal;
-			double dRotate = clock();
-			Size sizeBest = GetBestRotationSize(vecMatSrcPyr[iTopLayer].size(), pTemplData->vecPyramid[iTopLayer].size(), vecAngles[i]);
-
-			float fTranslationX = (sizeBest.width - 1) / 2.0f - ptCenter.x;
-			float fTranslationY = (sizeBest.height - 1) / 2.0f - ptCenter.y;
-			matR.at<double>(0, 2) += fTranslationX;
-			matR.at<double>(1, 2) += fTranslationY;
-			warpAffine(vecMatSrcPyr[iTopLayer], matRotatedSrc, matR, sizeBest, INTER_LINEAR, BORDER_CONSTANT, Scalar(pTemplData->iBorderColor));
-
-			MatchTemplate(matRotatedSrc, pTemplData, matResult, iTopLayer, false);
-
-			if (bCalMaxByBlock)
+			vector<s_MatchParameter> local;
+#pragma omp for schedule(dynamic)
+			for (int i = 0; i < iSize; i++)
 			{
-				s_BlockMax blockMax(matResult, pTemplData->vecPyramid[iTopLayer].size());
-				blockMax.GetMaxValueLoc(dMaxVal, ptMaxLoc);
-				if (dMaxVal < vecLayerScore[iTopLayer])
-					continue;
-				vecMatchParameter.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
-				for (int j = 0; j < matchParam_.maxCount + MATCH_CANDIDATE_NUM - 1; j++)
+				Mat matRotatedSrc, matR = getRotationMatrix2D(ptCenter, vecAngles[i], 1);
+				Mat matResult;
+				Point ptMaxLoc;
+				double dValue, dMaxVal;
+				Size sizeBest = GetBestRotationSize(vecMatSrcPyr[iTopLayer].size(), pTemplData->vecPyramid[iTopLayer].size(), vecAngles[i]);
+
+				float fTranslationX = (sizeBest.width - 1) / 2.0f - ptCenter.x;
+				float fTranslationY = (sizeBest.height - 1) / 2.0f - ptCenter.y;
+				matR.at<double>(0, 2) += fTranslationX;
+				matR.at<double>(1, 2) += fTranslationY;
+				warpAffine(vecMatSrcPyr[iTopLayer], matRotatedSrc, matR, sizeBest, INTER_LINEAR, BORDER_CONSTANT, borderFill);
+
+				MatchTemplate(matRotatedSrc, pTemplData, matResult, iTopLayer, false);
+
+				if (bCalMaxByBlock)
 				{
-					ptMaxLoc = GetNextMaxLoc(matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size(), dValue, matchParam_.iouThreshold, blockMax);
-					if (dValue < vecLayerScore[iTopLayer])
-						break;
-					vecMatchParameter.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+					s_BlockMax blockMax(matResult, pTemplData->vecPyramid[iTopLayer].size());
+					blockMax.GetMaxValueLoc(dMaxVal, ptMaxLoc);
+					if (dMaxVal < vecLayerScore[iTopLayer])
+						continue;
+					local.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
+					for (int j = 0; j < matchParam_.maxCount + MATCH_CANDIDATE_NUM - 1; j++)
+					{
+						ptMaxLoc = GetNextMaxLoc(matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size(), dValue, matchParam_.iouThreshold, blockMax);
+						if (dValue < vecLayerScore[iTopLayer])
+							break;
+						local.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+					}
+				}
+				else
+				{
+					minMaxLoc(matResult, 0, &dMaxVal, 0, &ptMaxLoc);
+					if (dMaxVal < vecLayerScore[iTopLayer])
+						continue;
+					local.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
+					for (int j = 0; j < matchParam_.maxCount + MATCH_CANDIDATE_NUM - 1; j++)
+					{
+						ptMaxLoc = GetNextMaxLoc(matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size(), dValue, matchParam_.iouThreshold);
+						if (dValue < vecLayerScore[iTopLayer])
+							break;
+						local.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+					}
 				}
 			}
-			else
+#pragma omp critical
 			{
-				minMaxLoc(matResult, 0, &dMaxVal, 0, &ptMaxLoc);
-				if (dMaxVal < vecLayerScore[iTopLayer])
-					continue;
-				vecMatchParameter.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
-				for (int j = 0; j < matchParam_.maxCount + MATCH_CANDIDATE_NUM - 1; j++)
-				{
-					ptMaxLoc = GetNextMaxLoc(matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size(), dValue, matchParam_.iouThreshold);
-					if (dValue < vecLayerScore[iTopLayer])
-						break;
-					vecMatchParameter.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
-				}
+				vecMatchParameter.insert(vecMatchParameter.end(), local.begin(), local.end());
 			}
 		}
 		std::sort(vecMatchParameter.begin(), vecMatchParameter.end(), compareScoreBig2Small);
@@ -787,7 +913,11 @@ namespace template_matching {
 
 		//第一階段結束
 		bool bSubPixelEstimation = m_bSubPixel;
-		int iStopLayer = m_bStopLayer1 ? 1 : 0; //设置为1时：粗匹配，牺牲精度提升速度。
+		int iStopLayer = matchParam_.stopLayer;
+		if (iStopLayer < 0)
+			iStopLayer = 0;
+		if (iStopLayer > iTopLayer)
+			iStopLayer = iTopLayer;
 		//int iSearchSize = min (m_iMaxPos + MATCH_CANDIDATE_NUM, (int)vecMatchParameter.size ());//可能不需要搜尋到全部 太浪費時間
 		vector<s_MatchParameter> vecAllResult;
 		for (int i = 0; i < (int)vecMatchParameter.size(); i++)
@@ -812,20 +942,13 @@ namespace template_matching {
 					//搜尋角度
 					dAngleStep = atan(2.0 / max(pTemplData->vecPyramid[iLayer].cols, pTemplData->vecPyramid[iLayer].rows)) * R2D;//min改為max
 					vector<double> vecAngles;
-					//double dAngleS = vecMatchParameter[i].dAngleStart, dAngleE = vecMatchParameter[i].dAngleEnd;
 					double dMatchedAngle = vecMatchParameter[i].dMatchAngle;
-					if (matchParam_.angle)
-					{
-						for (int i = -2; i <= 2; i++)
-							vecAngles.push_back(dMatchedAngle + dAngleStep * i);
-					}
+					if (matchParam_.angle < VISION_TOLERANCE)
+						vecAngles.push_back(0.0);
 					else
 					{
-						if (matchParam_.angle < VISION_TOLERANCE)
-							vecAngles.push_back(0.0);
-						else
-							for (int i = -2; i <= 2; i++)
-								vecAngles.push_back(dMatchedAngle + dAngleStep * i);
+						for (int k = -2; k <= 2; k++)
+							vecAngles.push_back(dMatchedAngle + dAngleStep * k);
 					}
 					Point2f ptSrcCenter((vecMatSrcPyr[iLayer].cols - 1) / 2.0f, (vecMatSrcPyr[iLayer].rows - 1) / 2.0f);
 					iSize = (int)vecAngles.size();
@@ -837,9 +960,9 @@ namespace template_matching {
 						Mat matResult, matRotatedSrc;
 						double dMaxValue = 0;
 						Point ptMaxLoc;
-						GetRotatedROI(vecMatSrcPyr[iLayer], pTemplData->vecPyramid[iLayer].size(), ptLT * 2, vecAngles[j], matRotatedSrc);
+						GetRotatedROI(vecMatSrcPyr[iLayer], pTemplData->vecPyramid[iLayer].size(), ptLT * 2, vecAngles[j], matRotatedSrc, borderFill);
 
-						MatchTemplate(matRotatedSrc, pTemplData, matResult, iLayer, true);
+						MatchTemplate(matRotatedSrc, pTemplData, matResult, iLayer, false);
 						//matchTemplate (matRotatedSrc, pTemplData->vecPyramid[iLayer], matResult, CV_TM_CCOEFF_NORMED);
 						minMaxLoc(matResult, 0, &dMaxValue, 0, &ptMaxLoc);
 						vecNewMatchParameter[j] = s_MatchParameter(ptMaxLoc, dMaxValue, vecAngles[j]);
@@ -866,13 +989,15 @@ namespace template_matching {
 					if (bSubPixelEstimation
 						&& iLayer == 0
 						&& (!vecNewMatchParameter[iMaxScoreIndex].bPosOnBorder)
-						&& iMaxScoreIndex != 0
-						&& iMaxScoreIndex != 2)
+						&& iMaxScoreIndex >= 1
+						&& iMaxScoreIndex + 1 < (int)vecNewMatchParameter.size())
 					{
 						double dNewX = 0, dNewY = 0, dNewAngle = 0;
-						SubPixEsimation(&vecNewMatchParameter, &dNewX, &dNewY, &dNewAngle, dAngleStep, iMaxScoreIndex);
-						vecNewMatchParameter[iMaxScoreIndex].pt = Point2d(dNewX, dNewY);
-						vecNewMatchParameter[iMaxScoreIndex].dMatchAngle = dNewAngle;
+						if (SubPixEsimation(&vecNewMatchParameter, &dNewX, &dNewY, &dNewAngle, dAngleStep, iMaxScoreIndex))
+						{
+							vecNewMatchParameter[iMaxScoreIndex].pt = Point2d(dNewX, dNewY);
+							vecNewMatchParameter[iMaxScoreIndex].dMatchAngle = dNewAngle;
+						}
 					}
 					//次像素估計
 
@@ -947,6 +1072,14 @@ namespace template_matching {
 				sstm.Angle += 360;
 			if (sstm.Angle > 180)
 				sstm.Angle -= 360;
+			if (!isFinitePoint(sstm.LeftTop)
+				|| !isFinitePoint(sstm.RightTop)
+				|| !isFinitePoint(sstm.RightBottom)
+				|| !isFinitePoint(sstm.LeftBottom)
+				|| !isFinitePoint(sstm.Center)
+				|| !std::isfinite(sstm.Angle)
+				|| !std::isfinite(sstm.Score))
+				continue;
 			matchResults.push_back(sstm);
 
 			//std::cout << "x: " << sstm.Center.x << ", y: " << sstm.Center.y << endl;
@@ -969,7 +1102,7 @@ namespace template_matching {
 		return (int)matchResults.size();
 	}
 
-	int PatternMatcher::setTemplate(const cv::Mat& templateImage)
+	int PatternMatcher::setTemplate(const cv::Mat& templateImage, const cv::Mat& mask)
 	{
 		if (templateImage.empty())
 			return -1;
@@ -978,7 +1111,12 @@ namespace template_matching {
 		m_TemplData.bIsPatternLearned = false;
 
 		templateImage_ = templateImage.clone();
-		LearnPattern(m_TemplData, templateImage_, matchParam_.minArea);
+		LearnPattern(m_TemplData, templateImage_, matchParam_.minArea, mask);
+		if (!m_TemplData.bIsPatternLearned)
+		{
+			logger_->error("LearnPattern failed (check mask size/channels).");
+			return -3;
+		}
 
 		return 0;
 

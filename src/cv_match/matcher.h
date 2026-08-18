@@ -10,7 +10,7 @@ namespace template_matching
 	class LIB_API Matcher
 	{
 	public:
-		~Matcher() {  }
+		virtual ~Matcher() {}
 
 		/** 匹配
 		@param frame 输入图像.
@@ -21,7 +21,7 @@ namespace template_matching
 		/** 设置模板
 		@param templateImage 模板图像.
 		*/
-		virtual int setTemplate(const cv::Mat& templateImage) = 0;
+		virtual int setTemplate(const cv::Mat& templateImage, const cv::Mat& mask = cv::Mat()) = 0;
 
 		/** 绘制匹配结果
 		@param frame 输入图像.

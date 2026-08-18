@@ -101,8 +101,22 @@ $(name)   : $(workdir)/$(name)
 
 all       : $(name)
 
+python    ?= /usr/local/bin/python3.12
+
 run       : $(name)
 	@cd $(workdir) && python3 test.py
+
+test-caliper : $(name)
+	@PYTHONPATH=$(CURDIR)/$(workdir) $(python) $(CURDIR)/tests/test_caliper.py -v
+
+test-match : $(name)
+	@PYTHONPATH=$(CURDIR)/$(workdir) $(python) $(CURDIR)/tests/test_pattern_match.py -v
+
+test-shape : $(name)
+	@PYTHONPATH=$(CURDIR)/$(workdir) $(python) $(CURDIR)/tests/test_shape_match.py -v
+
+test-deeplab : $(name)
+	@PYTHONPATH=$(CURDIR)/$(workdir) $(python) $(CURDIR)/tests/test_deeplabv3.py -v
 
 pro       : $(workdir)/pro
 
@@ -144,4 +158,4 @@ $(objdir)/%.cu.mk : $(srcdir)/%.cu
 clean :
 	@rm -rf $(objdir) $(workdir)/$(name) $(workdir)/pro  $(workdir)/imgs
 
-.PHONY : clean run $(name) runpro
+.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab

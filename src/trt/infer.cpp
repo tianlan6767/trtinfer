@@ -14,6 +14,8 @@
 #include "trt/sahiyolo/yolo11_obb_sahi.hpp"
 #include "trt/sahiyolo/yolov5_sahi.hpp"
 #include "trt/ad/uviad.hpp"
+#include "trt/deeplab/deeplabv3.hpp"
+#include "trt/deeplab/deeplabv3_sahi.hpp"
 
 
 std::shared_ptr<InferBase> load(const std::string &model_path,
@@ -27,7 +29,8 @@ std::shared_ptr<InferBase> load(const std::string &model_path,
                                 int slice_width,
                                 int slice_height,
                                 double slice_horizontal_ratio,
-                                double slice_vertical_ratio)
+                                double slice_vertical_ratio,
+                                SegOutput seg_output)
 {
     printf("Loading model: %s\n", model_path.c_str());
     printf("Model type: %s\n", ModelTypeConverter::to_string(model_type).c_str());
@@ -140,6 +143,16 @@ std::shared_ptr<InferBase> load(const std::string &model_path,
         break;
     case ModelType::UVIAD:
         instance = AD::load_uviad(model_path, gpu_id, confidence_threshold, max_batch_size);
+        break;
+    case ModelType::DEEPLABV3:
+        printf("Seg output: %s\n", to_string(seg_output));
+        instance = deeplab::load_deeplabv3(model_path, names, gpu_id, confidence_threshold, max_batch_size, seg_output);
+        break;
+    case ModelType::DEEPLABV3SAHI:
+        printf("Seg output: %s\n", to_string(seg_output));
+        instance = deeplab::load_deeplabv3_sahi(model_path, names, gpu_id, confidence_threshold, max_batch_size,
+                                                auto_slice, slice_width, slice_height, slice_horizontal_ratio,
+                                                slice_vertical_ratio, seg_output);
         break;
     default:
         instance = nullptr;

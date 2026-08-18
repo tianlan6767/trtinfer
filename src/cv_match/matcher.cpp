@@ -1,5 +1,6 @@
 ﻿#include "base_matcher.h"
 #include "PatternMatching.h"
+#include "ShapeMatching.h"
 
 #include <fstream>
 
@@ -18,11 +19,16 @@ namespace template_matching
 			logger_->info("Initializing matcher for type: PATTERN");
 			matcher = std::make_unique<PatternMatcher>(paramCopy);
 			break;
-		default:
+		case MatcherType::SHAPE:
+			logger_->info("Initializing matcher for type: SHAPE");
+			matcher = std::make_unique<ShapeMatcher>(paramCopy);
 			break;
+		default:
+			logger_->error("Unknown matcherType");
+			return nullptr;
 		}
 
-		if (!matcher->isInited())
+		if (!matcher || !matcher->isInited())
 		{
 			return nullptr;
 		}

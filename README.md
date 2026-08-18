@@ -132,6 +132,26 @@ printf("objs size : %d\n", objs.size());
    <img src="https://github.com/leon0514/trt-sahi-yolo/blob/main/assert/sliced_text.jpg?raw=true" width="100%"/>
 </div>
 
+## 卡尺测量（直线 / 圆）
+
+工业测量用 1D 卡尺：按极性找亚像素边缘后拟合直线或圆，已绑定到 `tinfer.CaliperWrapper`。
+
+- 参数说明、调参、耗时、Python/C++ API：[docs/caliper.md](docs/caliper.md)
+- 灰度模板匹配优化：[docs/cv_match_update.md](docs/cv_match_update.md)
+- 形状匹配（边缘梯度）：[docs/shape_match.md](docs/shape_match.md)
+- DeepLabV3+ 语义分割：[docs/deeplabv3.md](docs/deeplabv3.md)
+- 测试：`make test-caliper`、`make test-match`、`make test-shape`、`make test-deeplab`
+- 螺母竖边示例：`workspace/ed_roi_lines.py --method caliper`
+
+```python
+import tinfer
+param = tinfer.CaliperParam()
+param.polarity = tinfer.CaliperPolarity.LightToDark
+cal = tinfer.CaliperWrapper(param)
+line = cal.find_line(gray, x0, y0, x1, y1, True)
+circle = cal.find_circle(gray, cx, cy, 70, 20)
+```
+
 ## 添加Python支持
 使用pybind11封装程序
 

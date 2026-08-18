@@ -197,6 +197,25 @@ void osd_pose(cv::Mat &image, const object::PoseResultArray &pose_results)
 
 void osd_segmentation(cv::Mat &image, const object::SegmentationResultArray &segmentation_results)
 {
+    if (segmentation_results.size() == 1 && segmentation_results[0].seg &&
+        segmentation_results[0].box.class_name == "class_map")
+    {
+        const auto &seg = segmentation_results[0].seg;
+        cv::Mat class_map(seg->height, seg->width, CV_8UC1, seg->data);
+        double minv = 0, maxv = 0;
+        cv::minMaxLoc(class_map, &minv, &maxv);
+        for (int c = 1; c <= (int)maxv; ++c)
+        {
+            cv::Mat bin = (class_map == c);
+            if (cv::countNonZero(bin) == 0)
+                continue;
+            auto color = random_color(c);
+            cv::Scalar bgr_color(std::get<0>(color), std::get<1>(color), std::get<2>(color));
+            overlay_mask(image, bin, 0, 0, bgr_color, 0.6);
+        }
+        return;
+    }
+
     PositionManager<float> pm(getFontSize);
     for (const auto &segment : segmentation_results)
     {
