@@ -27,7 +27,7 @@ auto hasVaildExtension = [](const std::string& path) {
 
 void run_yolo11()
 {
-    std::shared_ptr<InferBase> model_ = load("/home/ps/workspace/trt/trt-sahi-yolo/td_0816.transd-dy.trtmodel",
+    std::shared_ptr<InferBase> model_ = load("/home/ps/workspace/trt/cvter/td_0816.transd-dy.trtmodel",
         ModelType::YOLO11,
         classes_names,
         0,
@@ -39,9 +39,9 @@ void run_yolo11()
         0,
         0.0,
         0.0);
-    // cv::Mat image = cv::imread("/home/ps/workspace/trt/trt-sahi-yolo/workspace/infer1/LK_0515_0208_00_orig_data_0025_408-104-2_1_18-APS.jpg");
-    std::string img_path = "/home/ps/workspace/trt/trt-sahi-yolo/workspace/src1";
-    std::string savePath = "/home/ps/workspace/trt/trt-sahi-yolo/workspace/src1_result";
+    // cv::Mat image = cv::imread("/home/ps/workspace/trt/cvter/workspace/infer1/LK_0515_0208_00_orig_data_0025_408-104-2_1_18-APS.jpg");
+    std::string img_path = "/home/ps/workspace/trt/cvter/workspace/src1";
+    std::string savePath = "/home/ps/workspace/trt/cvter/workspace/src1_result";
     fs::create_directories(savePath);
 
     std::vector<cv::String> image_paths_;
@@ -100,7 +100,7 @@ void run_yolo11()
 
 void run_yolo11_sahi()
 {
-    std::shared_ptr<InferBase> model_ = load("/home/ps/workspace/trt/trt-sahi-yolo/td_0816.transd-dy.trtmodel",
+    std::shared_ptr<InferBase> model_ = load("/home/ps/workspace/trt/cvter/td_0816.transd-dy.trtmodel",
         ModelType::YOLO11SAHI,
         classes_names,
         0,
@@ -112,9 +112,9 @@ void run_yolo11_sahi()
         1280,
         0.2,
         0.2);
-    // cv::Mat image = cv::imread("/home/ps/workspace/trt/trt-sahi-yolo/workspace/infer1/LK_0515_0208_00_orig_data_0025_408-104-2_1_18-APS.jpg");
-    std::string img_path = "/home/ps/workspace/trt/trt-sahi-yolo/workspace/test2";
-    std::string savePath = "/home/ps/workspace/trt/trt-sahi-yolo/workspace/test2_result";
+    // cv::Mat image = cv::imread("/home/ps/workspace/trt/cvter/workspace/infer1/LK_0515_0208_00_orig_data_0025_408-104-2_1_18-APS.jpg");
+    std::string img_path = "/home/ps/workspace/trt/cvter/workspace/test2";
+    std::string savePath = "/home/ps/workspace/trt/cvter/workspace/test2_result";
     fs::create_directories(savePath);
 
     std::vector<cv::String> image_paths_;

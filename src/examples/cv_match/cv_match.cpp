@@ -7,8 +7,8 @@ void run_match_example()
     // ------------------------------
     // 1. 读取模板和测试图
     // ------------------------------
-    std::string temp_path = R"(/home/ps/workspace/trt/trt-sahi-yolo/workspace/match_img/161.jpg)";
-    std::string test_path = R"(/home/ps/workspace/trt/trt-sahi-yolo/workspace/match_img/images2/1_6_1 (3).jpg)";
+    std::string temp_path = R"(/home/ps/workspace/trt/cvter/workspace/match_img/161.jpg)";
+    std::string test_path = R"(/home/ps/workspace/trt/cvter/workspace/match_img/images2/1_6_1 (3).jpg)";
     cv::Mat templ = cv::imread(temp_path, cv::IMREAD_GRAYSCALE);
     cv::Mat test  = cv::imread(test_path, cv::IMREAD_GRAYSCALE);
 

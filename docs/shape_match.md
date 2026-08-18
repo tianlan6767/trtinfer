@@ -1,5 +1,7 @@
 # 形状匹配（Shape-based）
 
+灰度 NCC 用法见 [pattern_match.md](pattern_match.md)。全部 Python 示例见 [python.md](python.md)。
+
 类似 Halcon `create_shape_model` / `find_shape_model`：用模板**边缘处的梯度方向**建模，在搜索图上对位置和角度打分。不看填充灰度，所以整体变亮、拉丝干扰通常比 NCC 稳。
 
 ## 和灰度 NCC 的区别
@@ -21,10 +23,10 @@
 ## 用法
 
 ```python
-import tinfer
+import cvter
 
-param = tinfer.MatcherParam()
-param.matcherType = tinfer.MatcherType.SHAPE
+param = cvter.MatcherParam()
+param.matcherType = cvter.MatcherType.SHAPE
 param.angle = 15              # ±15°
 param.scoreThreshold = 0.5    # 0~1，梯度方向平均余弦
 param.minArea = 256
@@ -34,7 +36,7 @@ param.usePolarity = True      # 明暗方向要一致
 param.greediness = 0.9
 param.maxCount = 1
 
-m = tinfer.MatcherWrapper(param)
+m = cvter.MatcherWrapper(param)
 m.setTemplate(templ)                 # 或 m.setTemplate(templ, mask)
 hits = m.match(gray)
 # hits[0].Center / Angle / Score / 四角 与 PATTERN 相同

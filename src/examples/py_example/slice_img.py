@@ -48,8 +48,8 @@ def slice_image(
     return slices
 
 if __name__ == "__main__":
-    imp = r"/home/ps/workspace/trt/trt-sahi-yolo/workspace/散热片-aoi/src/TnM_X9601_EVT_967A1_AOI_20260416_DYHHS9B0A2M0001HJX+EF61P_20260416210601_3_1_1_Color.jpg"
-    dst = r"/home/ps/workspace/trt/trt-sahi-yolo/workspace/散热片-aoi/src/slice2560"
+    imp = r"/home/ps/workspace/trt/cvter/workspace/散热片-aoi/src/TnM_X9601_EVT_967A1_AOI_20260416_DYHHS9B0A2M0001HJX+EF61P_20260416210601_3_1_1_Color.jpg"
+    dst = r"/home/ps/workspace/trt/cvter/workspace/散热片-aoi/src/slice2560"
     Path(dst).mkdir(parents=True, exist_ok=True)
     img = cv2.imdecode(np.fromfile(imp, dtype=np.uint8), cv2.IMREAD_COLOR)
 

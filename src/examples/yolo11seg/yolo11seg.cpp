@@ -16,7 +16,7 @@ static std::vector<std::string> classes_names = {
 
 void run_yolo11seg()
 {
-    std::shared_ptr<InferBase> model_ = load("/home/ps/workspace/trt/trt-sahi-yolo/workspace/pretrain/yolov8s-seg.transd.trtmodel",
+    std::shared_ptr<InferBase> model_ = load("/home/ps/workspace/trt/cvter/workspace/pretrain/yolov8s-seg.transd.trtmodel",
         ModelType::YOLO11SEG,
         classes_names,
         0,
@@ -28,7 +28,7 @@ void run_yolo11seg()
         0,
         0.0,
         0.0);
-    cv::Mat image = cv::imread("/home/ps/workspace/trt/trt-sahi-yolo/workspace/inference/persons.jpg");
+    cv::Mat image = cv::imread("/home/ps/workspace/trt/cvter/workspace/inference/persons.jpg");
     std::vector<cv::Mat> images = {image};
     auto det = model_->forwards(images);
     std::visit(

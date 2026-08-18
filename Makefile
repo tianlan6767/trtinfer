@@ -1,5 +1,5 @@
 cc        := g++
-name      := tinfer.so
+name      := cvter.so
 workdir   := workspace
 srcdir    := src
 objdir    := objs
@@ -14,7 +14,7 @@ opencv_include_path  := /home/ps/workspace/trt/lean/cv4110/install/include/openc
 trt_include_path     := /home/ps/workspace/trt/lean/TensorRT-10.11.0.33/include
 cuda_include_path    := $(cuda_home)/include
 ffmpeg_include_path  := 
-spdlog_include_path := /home/ps/workspace/trt/trt-sahi-yolo/src/3rdParty/spdlog/include
+spdlog_include_path := /home/ps/workspace/trt/cvter/src/3rdParty/spdlog/include
 # python_include_path
 exclude_path  := src/3rdParty/spdlog/tests src/3rdParty/spdlog/example src/3rdParty/spdlog/bench src/3rdParty/spdlog/src
 
@@ -104,7 +104,7 @@ all       : $(name)
 python    ?= /usr/local/bin/python3.12
 
 run       : $(name)
-	@cd $(workdir) && python3 test.py
+	@cd $(workdir) && $(python) test.py
 
 test-caliper : $(name)
 	@PYTHONPATH=$(CURDIR)/$(workdir) $(python) $(CURDIR)/tests/test_caliper.py -v

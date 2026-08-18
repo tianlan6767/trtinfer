@@ -39,9 +39,9 @@ void run_single_deeplabv3(const std::string &filename, cv::Mat &image, std::shar
 void run_deeplabv3()
 {
     const std::string engine =
-        "/home/ps/workspace/trt/trt-sahi-yolo/workspace/deepv3/logs_tgwy_v3/best_epoch_weights.trtmodel";
+        "/home/ps/workspace/trt/cvter/workspace/deepv3/logs_tgwy_v3/best_epoch_weights.trtmodel";
     const std::string image_path =
-        "/home/ps/workspace/trt/trt-sahi-yolo/workspace/deepv3/datasets/tgwy/VOC2007/JPEGImages/101_PMST_反射率图_crop.jpg";
+        "/home/ps/workspace/trt/cvter/workspace/deepv3/datasets/tgwy/VOC2007/JPEGImages/101_PMST_反射率图_crop.jpg";
 
     std::shared_ptr<InferBase> model_ =
         load(engine, ModelType::DEEPLABV3, classes_names, 0, 0.35f, 0.0f, 1, false, 0, 0, 0.0, 0.0,
@@ -63,9 +63,9 @@ void run_deeplabv3()
 void run_deeplabv3_sahi()
 {
     const std::string engine =
-        "/home/ps/workspace/trt/trt-sahi-yolo/workspace/deepv3/logs_tgwy_v3/best_epoch_weights.trtmodel";
+        "/home/ps/workspace/trt/cvter/workspace/deepv3/logs_tgwy_v3/best_epoch_weights.trtmodel";
     const std::string image_path =
-        "/home/ps/workspace/trt/trt-sahi-yolo/workspace/deepv3/datasets/tgwy/VOC2007/JPEGImages/101_PMST_反射率图_crop.jpg";
+        "/home/ps/workspace/trt/cvter/workspace/deepv3/datasets/tgwy/VOC2007/JPEGImages/101_PMST_反射率图_crop.jpg";
 
     std::shared_ptr<InferBase> model_ =
         load(engine, ModelType::DEEPLABV3SAHI, classes_names, 0, 0.35f, 0.0f, 1, false, 960, 960, 0.1, 0.1,

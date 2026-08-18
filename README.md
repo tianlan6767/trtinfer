@@ -1,8 +1,8 @@
-# TRT-SAHI-YOLO
+# cvter
 
 ## 项目简介
 
-**TRT-SAHI-YOLO** 是一个基于 **SAHI** 图像切割和 **TensorRT** 推理引擎的目标检测系统。该项目结合了高效的图像预处理与加速推理技术，旨在提供快速、精准的目标检测能力。通过切割大图像成多个小块进行推理，并应用非极大值抑制（NMS）来优化检测结果，最终实现对物体的精确识别。
+**cvter** 是基于 **TensorRT** 的工业视觉库，Python 模块为 `import cvter`。覆盖检测 / 分割 / 分类、SAHI 切片、卡尺测量和模板匹配。大图可切成重叠小块推理，再用 NMS 合并结果。
 
 ## 功能特性
 
@@ -12,6 +12,29 @@
 2. **TensorRT 推理**  
    使用 **TensorRT** 进行深度学习模型推理加速。
    目前支持 **TensorRT8** 和 **TensorRT10** API
+
+## 文档目录
+
+Python 全部用法（可拷贝）：[docs/python.md](docs/python.md)
+
+| 模块 | 文档 |
+|---|---|
+| YOLO 检测 / 姿态 / 实例分割 / OBB / SAHI | [docs/yolo.md](docs/yolo.md) |
+| 图像分类 | [docs/classify.md](docs/classify.md) |
+| 异常分割 UVIAD | [docs/uviad.md](docs/uviad.md) |
+| DeepLabV3+ 语义分割 | [docs/deeplabv3.md](docs/deeplabv3.md) |
+| 灰度模板匹配 NCC | [docs/pattern_match.md](docs/pattern_match.md) |
+| 形状匹配 | [docs/shape_match.md](docs/shape_match.md) |
+| 卡尺测量 | [docs/caliper.md](docs/caliper.md) |
+| 灰度匹配实现变更 | [docs/cv_match_update.md](docs/cv_match_update.md) |
+
+```bash
+make -j
+make test-caliper test-match test-shape test-deeplab
+# 推理脚本：cd workspace && /usr/local/bin/python3.12 test.py
+```
+
+`cvter.so` 按 Python 3.12 编译，导入时用同一解释器，并把 `workspace` 加到 `PYTHONPATH`。
 
 
 ## 注意事项
@@ -134,20 +157,15 @@ printf("objs size : %d\n", objs.size());
 
 ## 卡尺测量（直线 / 圆）
 
-工业测量用 1D 卡尺：按极性找亚像素边缘后拟合直线或圆，已绑定到 `tinfer.CaliperWrapper`。
+工业测量用 1D 卡尺：按极性找亚像素边缘后拟合直线或圆，已绑定到 `cvter.CaliperWrapper`。
 
-- 参数说明、调参、耗时、Python/C++ API：[docs/caliper.md](docs/caliper.md)
-- 灰度模板匹配优化：[docs/cv_match_update.md](docs/cv_match_update.md)
-- 形状匹配（边缘梯度）：[docs/shape_match.md](docs/shape_match.md)
-- DeepLabV3+ 语义分割：[docs/deeplabv3.md](docs/deeplabv3.md)
-- 测试：`make test-caliper`、`make test-match`、`make test-shape`、`make test-deeplab`
-- 螺母竖边示例：`workspace/ed_roi_lines.py --method caliper`
+参数、调参、耗时见 [docs/caliper.md](docs/caliper.md)。螺母竖边示例：`workspace/ed_roi_lines.py --method caliper`。
 
 ```python
-import tinfer
-param = tinfer.CaliperParam()
-param.polarity = tinfer.CaliperPolarity.LightToDark
-cal = tinfer.CaliperWrapper(param)
+import cvter
+param = cvter.CaliperParam()
+param.polarity = cvter.CaliperPolarity.LightToDark
+cal = cvter.CaliperWrapper(param)
 line = cal.find_line(gray, x0, y0, x1, y1, True)
 circle = cal.find_circle(gray, cx, cy, 70, 20)
 ```
@@ -160,25 +178,64 @@ circle = cal.find_circle(gray, cx, cy, 70, 20)
 
 pip install pybind11-stubgen
 
-cd workspace # workspace 是 trtsahiyolo.so所在目录
+cd workspace # workspace 是 cvter.so 所在目录
 export PYTHONPATH=`pwd`
-pybind11-stubgen trtsahiyolo.so -o ./
+pybind11-stubgen cvter -o ./
 
 ```
 
 ### Python 使用
+
+完整可拷贝示例见 [docs/python.md](docs/python.md)。下面是各模块最短写法。
+
+**检测 / SAHI / 姿态 / 分割 / OBB / 分类 / 异常 / DeepLab**
+
 ```python
-import trtsahiyolo
-from trtsahiyolo import YoloType
+import cvter
 import cv2
 
-model = trtsahiyolo.TrtSahiYolo("yolo11s.engine", YoloType.YOLOV11, 0, 0.3, 0.45)
+img = cv2.imread("test.jpg")
+names = ["person"]
 
-frame = cv2.imread("test.jpg")
+# 检测（YOLOv5 把类型换成 YOLOV5）
+det = cvter.TrtInfer("yolo11s.engine", cvter.ModelType.YOLO11, names, 0, 0.3, 0.45, 8, False, 0, 0, 0.0, 0.0)
+for h in det.forwards([img])[0]:
+    print(h.box.class_name, h.box.score, h.box.left, h.box.top, h.box.right, h.box.bottom)
 
-result = model.autoSliceForward(frame)
+# 大图切片
+sahi = cvter.TrtInfer("yolo11s.engine", cvter.ModelType.YOLO11SAHI, names, 0, 0.3, 0.45, 18, False, 1280, 1280, 0.2, 0.2)
 
-print(result)
+# 姿态 / 实例分割 / 旋转框
+pose = cvter.TrtInfer("pose.engine", cvter.ModelType.YOLO11POSE, names, 0, 0.5, 0.45, 1, False, 0, 0, 0.0, 0.0)
+seg  = cvter.TrtInfer("seg.engine",  cvter.ModelType.YOLO11SEG,  names, 0, 0.5, 0.45, 1, False, 0, 0, 0.0, 0.0)
+obb  = cvter.TrtInfer("obb.engine",  cvter.ModelType.YOLO11OBB,  names, 0, 0.7, 0.45, 1, False, 0, 0, 0.0, 0.0)
+# 对应切片类型：YOLO11POSESAHI / YOLO11SEGSAHI / YOLO11OBBSAHI
+
+# 分类、异常
+cls = cvter.TrtInfer("cls.engine", cvter.ModelType.CLS, [], 0, 0.0, 0.0, 16, False, 0, 0, 0.0, 0.0)
+print(cls.forwards([img])[0][0].cls.class_id)
+ad = cvter.TrtInfer("ad.trtmodel", cvter.ModelType.UVIAD, [], 0, 0.45, 0.0, 1, False, 0, 0, 0.0, 0.0)
+
+# DeepLab：整图类别图
+dl = cvter.TrtInfer("deeplab.trtmodel", cvter.ModelType.DEEPLABV3, ["_background_", "胶路"], 0, 0.35, 0.0, 1, False, 0, 0, 0.0, 0.0, cvter.SegOutput.CLASS_MAP)
+```
+
+**灰度匹配 / 形状匹配 / 卡尺**
+
+```python
+p = cvter.MatcherParam()
+p.matcherType = cvter.MatcherType.PATTERN   # 或 SHAPE
+p.angle = 8
+m = cvter.MatcherWrapper(p)
+m.setTemplate(templ)                        # 可选 m.setTemplate(templ, mask)
+hit = m.match(gray)[0]
+print(hit.Center, hit.Angle, hit.Score)
+
+cp = cvter.CaliperParam()
+cp.polarity = cvter.CaliperPolarity.LightToDark
+cal = cvter.CaliperWrapper(cp)
+line = cal.find_line(gray, x0, y0, x1, y1, True)
+circle = cal.find_circle(gray, cx, cy, 70, 20)
 ```
 
 ## TODO

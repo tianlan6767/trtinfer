@@ -33,7 +33,7 @@ def load_tensor(file):
 
 if __name__ == "__main__":
     for i in range(10):
-        bin_path = f"/home/ps/workspace/trt/trt-sahi-yolo/workspace/{i}_orig_box_segment.bin"
+        bin_path = f"/home/ps/workspace/trt/cvter/workspace/{i}_orig_box_segment.bin"
         if not os.path.exists(bin_path):
             print(f"{bin_path} not exists, skip")
             continue
@@ -55,7 +55,7 @@ if __name__ == "__main__":
         cv2.imwrite(f"test_orig_{i}.png", tensor)  
     # print(tensor)
 
-    # tensor = load_tensor("/home/ps/workspace/trt/trt-sahi-yolo/workspace/cls_infer_output_0.bin")
+    # tensor = load_tensor("/home/ps/workspace/trt/cvter/workspace/cls_infer_output_0.bin")
     # print(tensor.max())
     # print(tensor.argmax())
     

@@ -44,10 +44,10 @@ trtexec \
 区域分割（胶路）：
 
 ```python
-model = tinfer.TrtInfer(
-    engine, tinfer.ModelType.DEEPLABV3, names,
+model = cvter.TrtInfer(
+    engine, cvter.ModelType.DEEPLABV3, names,
     0, 0.35, 0.0, 1, False, 0, 0, 0.0, 0.0,
-    tinfer.SegOutput.CLASS_MAP,
+    cvter.SegOutput.CLASS_MAP,
 )
 hits = model.forwards([img])[0]
 cls = hits[0].seg          # (H, W) uint8，像素值=类别 id
@@ -57,10 +57,10 @@ glue = cls == 1
 缺陷 / 要逐块量测时用默认实例输出：
 
 ```python
-model = tinfer.TrtInfer(
-    engine, tinfer.ModelType.DEEPLABV3, names,
+model = cvter.TrtInfer(
+    engine, cvter.ModelType.DEEPLABV3, names,
     0, 0.35, 0.0, 1, False, 0, 0, 0.0, 0.0,
-    tinfer.SegOutput.INSTANCES,   # 可省略，这是默认
+    cvter.SegOutput.INSTANCES,   # 可省略，这是默认
 )
 hits = model.forwards([img])[0]
 for h in hits:
@@ -71,11 +71,11 @@ for h in hits:
 SAHI 切片（独立类型 `DEEPLABV3SAHI`，切片参数与 YOLO-SAHI 相同）。当前 engine 是静态 batch=1，切片会串行推理。胶路模型建议切片 960、重叠 0.1，与 `predict.py` 滑窗一致：
 
 ```python
-model = tinfer.TrtInfer(
-    engine, tinfer.ModelType.DEEPLABV3SAHI, names,
+model = cvter.TrtInfer(
+    engine, cvter.ModelType.DEEPLABV3SAHI, names,
     0, 0.35, 0.0, 1,
     False, 960, 960, 0.1, 0.1,
-    tinfer.SegOutput.CLASS_MAP,
+    cvter.SegOutput.CLASS_MAP,
 )
 ```
 

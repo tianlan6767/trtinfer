@@ -14,9 +14,9 @@ WORKSPACE = ROOT / "workspace"
 sys.path.insert(0, str(WORKSPACE))
 
 try:
-    import tinfer
+    import cvter
 except ImportError as exc:  # pragma: no cover
-    raise SystemExit(f"无法 import tinfer: {exc}") from exc
+    raise SystemExit(f"无法 import cvter: {exc}") from exc
 
 ENGINE = WORKSPACE / "deepv3" / "logs_tgwy_v3" / "best_epoch_weights.trtmodel"
 IMAGE = WORKSPACE / "deepv3" / "datasets" / "tgwy" / "VOC2007" / "JPEGImages" / "101_PMST_反射率图_crop.jpg"
@@ -28,9 +28,9 @@ class TestDeeplabV3(unittest.TestCase):
     def test_find_foreground(self):
         img = cv2.imdecode(np.fromfile(str(IMAGE), dtype=np.uint8), cv2.IMREAD_COLOR)
         self.assertIsNotNone(img)
-        model = tinfer.TrtInfer(
+        model = cvter.TrtInfer(
             str(ENGINE),
-            tinfer.ModelType.DEEPLABV3,
+            cvter.ModelType.DEEPLABV3,
             NAMES,
             0,
             0.2,
@@ -58,9 +58,9 @@ class TestDeeplabV3(unittest.TestCase):
     def test_class_map(self):
         img = cv2.imdecode(np.fromfile(str(IMAGE), dtype=np.uint8), cv2.IMREAD_COLOR)
         self.assertIsNotNone(img)
-        model = tinfer.TrtInfer(
+        model = cvter.TrtInfer(
             str(ENGINE),
-            tinfer.ModelType.DEEPLABV3,
+            cvter.ModelType.DEEPLABV3,
             NAMES,
             0,
             0.2,
@@ -71,7 +71,7 @@ class TestDeeplabV3(unittest.TestCase):
             0,
             0.0,
             0.0,
-            tinfer.SegOutput.CLASS_MAP,
+            cvter.SegOutput.CLASS_MAP,
         )
         self.assertTrue(model.valid)
         hits = model.forwards([img])[0]
@@ -89,9 +89,9 @@ class TestDeeplabV3Sahi(unittest.TestCase):
     def test_sahi_covers_image(self):
         img = cv2.imdecode(np.fromfile(str(IMAGE), dtype=np.uint8), cv2.IMREAD_COLOR)
         self.assertIsNotNone(img)
-        model = tinfer.TrtInfer(
+        model = cvter.TrtInfer(
             str(ENGINE),
-            tinfer.ModelType.DEEPLABV3SAHI,
+            cvter.ModelType.DEEPLABV3SAHI,
             NAMES,
             0,
             0.2,

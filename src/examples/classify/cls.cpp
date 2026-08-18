@@ -4,7 +4,7 @@
 
 void run_cls()
 {
-    std::shared_ptr<InferBase> model_ = load("/home/ps/workspace/trt/trt-sahi-yolo/workspace/pretrain/yolo11s-cls-dy.engine",
+    std::shared_ptr<InferBase> model_ = load("/home/ps/workspace/trt/cvter/workspace/pretrain/yolo11s-cls-dy.engine",
         ModelType::CLS,
         std::vector<std::string>{},
         0,

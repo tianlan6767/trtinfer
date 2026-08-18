@@ -15,9 +15,9 @@ WORKSPACE = ROOT / "workspace"
 sys.path.insert(0, str(WORKSPACE))
 
 try:
-    import tinfer
+    import cvter
 except ImportError as exc:  # pragma: no cover
-    raise SystemExit(f"无法 import tinfer: {exc}") from exc
+    raise SystemExit(f"无法 import cvter: {exc}") from exc
 
 NUT_TPL = WORKSPACE / "match_img" / "nut" / "nut_template.jpg"
 NUT_IMG = WORKSPACE / "match_img" / "nut" / (
@@ -26,8 +26,8 @@ NUT_IMG = WORKSPACE / "match_img" / "nut" / (
 
 
 def make_shape_matcher(angle=0, score=0.45, max_count=1, min_area=256):
-    p = tinfer.MatcherParam()
-    p.matcherType = tinfer.MatcherType.SHAPE
+    p = cvter.MatcherParam()
+    p.matcherType = cvter.MatcherType.SHAPE
     p.angle = float(angle)
     p.scoreThreshold = float(score)
     p.maxCount = int(max_count)
@@ -36,7 +36,7 @@ def make_shape_matcher(angle=0, score=0.45, max_count=1, min_area=256):
     p.maxEdgePoints = 280
     p.usePolarity = True
     p.greediness = 0.85
-    return tinfer.MatcherWrapper(p)
+    return cvter.MatcherWrapper(p)
 
 
 def make_l_shape(h=64, w=80):

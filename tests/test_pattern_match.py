@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tinfer 灰度模板匹配测试（对应 docs/cv_match_update.md）。
+"""cvter 灰度模板匹配测试（对应 docs/cv_match_update.md）。
 
 用法:
   make test-match
@@ -20,10 +20,10 @@ WORKSPACE = ROOT / "workspace"
 sys.path.insert(0, str(WORKSPACE))
 
 try:
-    import tinfer
+    import cvter
 except ImportError as exc:  # pragma: no cover
     raise SystemExit(
-        f"无法 import tinfer（需要先 make 生成 workspace/tinfer.so）: {exc}"
+        f"无法 import cvter（需要先 make 生成 workspace/cvter.so）: {exc}"
     ) from exc
 
 NUT_TPL = WORKSPACE / "match_img" / "nut" / "nut_template.jpg"
@@ -33,8 +33,8 @@ NUT_IMG = WORKSPACE / "match_img" / "nut" / (
 
 
 def make_matcher(angle=0, score=0.55, max_count=1, min_area=256, stop_layer=0, mean_border=True):
-    p = tinfer.MatcherParam()
-    p.matcherType = tinfer.MatcherType.PATTERN
+    p = cvter.MatcherParam()
+    p.matcherType = cvter.MatcherType.PATTERN
     p.angle = float(angle)
     p.scoreThreshold = float(score)
     p.maxCount = int(max_count)
@@ -42,7 +42,7 @@ def make_matcher(angle=0, score=0.55, max_count=1, min_area=256, stop_layer=0, m
     p.iouThreshold = 0.3
     p.meanBorder = bool(mean_border)
     p.stopLayer = int(stop_layer)
-    return tinfer.MatcherWrapper(p)
+    return cvter.MatcherWrapper(p)
 
 
 def make_asymmetric_patch(h=56, w=88):

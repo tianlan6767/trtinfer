@@ -350,7 +350,7 @@ public:
     }
 };
 
-PYBIND11_MODULE(tinfer, m){
+PYBIND11_MODULE(cvter, m){
     py::class_<cv::Point2d>(m, "Point2d")
     .def(py::init<>())
     .def(py::init<double, double>(), py::arg("x"), py::arg("y"))

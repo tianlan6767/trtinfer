@@ -49,7 +49,7 @@ def transd(file):
     print(f"Model save to {dst}")
     onnx.save(model, dst)
 if __name__ == "__main__":
-    pth = r"/home/ps/workspace/trt/trt-sahi-yolo/workspace/pretrain/yolo11s-cls.pt"
+    pth = r"/home/ps/workspace/trt/cvter/workspace/pretrain/yolo11s-cls.pt"
     model = YOLO(pth)
     success = model.export(format="onnx", imgsz=224, device='0', dynamic=False, simplify=True)  # export the model to ONNX format
     # print(success)

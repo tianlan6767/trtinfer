@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tinfer 卡尺单元测试：合成图必跑，螺母实图存在则加跑。
+"""cvter 卡尺单元测试：合成图必跑，螺母实图存在则加跑。
 
 用法:
   make test-caliper
@@ -20,10 +20,10 @@ WORKSPACE = ROOT / "workspace"
 sys.path.insert(0, str(WORKSPACE))
 
 try:
-    import tinfer
+    import cvter
 except ImportError as exc:  # pragma: no cover
     raise SystemExit(
-        f"无法 import tinfer（需要先 make 生成 workspace/tinfer.so）: {exc}"
+        f"无法 import cvter（需要先 make 生成 workspace/cvter.so）: {exc}"
     ) from exc
 
 NUT_DIR = WORKSPACE / "match_img" / "nut"
@@ -74,10 +74,10 @@ class TestFindLineSynthetic(unittest.TestCase):
     def test_vertical_light_to_dark(self):
         x_edge = 70
         img = vertical_step(140, 200, x_edge)
-        p = tinfer.CaliperParam()
-        p.polarity = tinfer.CaliperPolarity.LightToDark
+        p = cvter.CaliperParam()
+        p.polarity = cvter.CaliperPolarity.LightToDark
         p.contrast = 12
-        r = tinfer.find_line(img, 40, 20, 110, 180, True, p)
+        r = cvter.find_line(img, 40, 20, 110, 180, True, p)
         self.assertTrue(r.found, r)
         self.assertLess(abs(r.center.x - x_edge), 1.0)
         self.assertLess(vert_dev_deg(r.angle), 1.5)
@@ -89,10 +89,10 @@ class TestFindLineSynthetic(unittest.TestCase):
         """横边搜索方向是从下到上；上暗下亮对应 LightToDark。"""
         y_edge = 90
         img = horizontal_step(180, 160, y_edge, top=40, bottom=200)
-        p = tinfer.CaliperParam()
-        p.polarity = tinfer.CaliperPolarity.LightToDark
+        p = cvter.CaliperParam()
+        p.polarity = cvter.CaliperPolarity.LightToDark
         p.contrast = 12
-        r = tinfer.find_line(img, 20, 40, 160, 130, False, p)
+        r = cvter.find_line(img, 20, 40, 160, 130, False, p)
         self.assertTrue(r.found, r)
         self.assertLess(abs(r.center.y - y_edge), 1.0)
         self.assertLess(min(abs(r.angle), abs(abs(r.angle) - 180.0)), 1.5)
@@ -100,40 +100,40 @@ class TestFindLineSynthetic(unittest.TestCase):
 
     def test_wrong_polarity_misses(self):
         img = vertical_step(140, 200, 70)
-        p = tinfer.CaliperParam()
-        p.polarity = tinfer.CaliperPolarity.DarkToLight
+        p = cvter.CaliperParam()
+        p.polarity = cvter.CaliperPolarity.DarkToLight
         p.contrast = 18
-        r = tinfer.find_line(img, 40, 20, 110, 180, True, p)
+        r = cvter.find_line(img, 40, 20, 110, 180, True, p)
         self.assertFalse(r.found, r)
 
     def test_flat_roi_no_edge(self):
         img = np.full((120, 120), 128, np.uint8)
-        r = tinfer.find_line(img, 20, 20, 100, 100, True, tinfer.CaliperParam())
+        r = cvter.find_line(img, 20, 20, 100, 100, True, cvter.CaliperParam())
         self.assertFalse(r.found)
 
     def test_select_first_last_strongest(self):
         img = two_falling_edges()
-        base = tinfer.CaliperParam()
-        base.polarity = tinfer.CaliperPolarity.LightToDark
+        base = cvter.CaliperParam()
+        base.polarity = cvter.CaliperPolarity.LightToDark
         base.contrast = 10
 
-        first = tinfer.CaliperParam()
+        first = cvter.CaliperParam()
         first.polarity = base.polarity
         first.contrast = base.contrast
-        first.select = tinfer.CaliperSelect.First
-        rf = tinfer.find_line(img, 10, 10, 150, 170, True, first)
+        first.select = cvter.CaliperSelect.First
+        rf = cvter.find_line(img, 10, 10, 150, 170, True, first)
 
-        last = tinfer.CaliperParam()
+        last = cvter.CaliperParam()
         last.polarity = base.polarity
         last.contrast = base.contrast
-        last.select = tinfer.CaliperSelect.Last
-        rl = tinfer.find_line(img, 10, 10, 150, 170, True, last)
+        last.select = cvter.CaliperSelect.Last
+        rl = cvter.find_line(img, 10, 10, 150, 170, True, last)
 
-        strong = tinfer.CaliperParam()
+        strong = cvter.CaliperParam()
         strong.polarity = base.polarity
         strong.contrast = base.contrast
-        strong.select = tinfer.CaliperSelect.Strongest
-        rs = tinfer.find_line(img, 10, 10, 150, 170, True, strong)
+        strong.select = cvter.CaliperSelect.Strongest
+        rs = cvter.find_line(img, 10, 10, 150, 170, True, strong)
 
         self.assertTrue(rf.found and rl.found and rs.found)
         self.assertLess(abs(rf.center.x - 40), 4.0)
@@ -143,10 +143,10 @@ class TestFindLineSynthetic(unittest.TestCase):
 
     def test_wrapper_matches_free_function(self):
         img = vertical_step(140, 200, 70)
-        p = tinfer.CaliperParam()
+        p = cvter.CaliperParam()
         p.contrast = 12
-        a = tinfer.find_line(img, 40, 20, 110, 180, True, p)
-        b = tinfer.CaliperWrapper(p).find_line(img, 40, 20, 110, 180, True)
+        a = cvter.find_line(img, 40, 20, 110, 180, True, p)
+        b = cvter.CaliperWrapper(p).find_line(img, 40, 20, 110, 180, True)
         self.assertEqual(a.found, b.found)
         self.assertAlmostEqual(a.center.x, b.center.x, places=4)
         self.assertAlmostEqual(a.angle, b.angle, places=4)
@@ -154,21 +154,21 @@ class TestFindLineSynthetic(unittest.TestCase):
     def test_oriented_vertical_phi_90(self):
         x_edge = 70
         img = vertical_step(140, 200, x_edge)
-        p = tinfer.CaliperParam()
+        p = cvter.CaliperParam()
         p.contrast = 12
-        r = tinfer.find_line_oriented(img, 70, 100, 90.0, 80, 30, p)
+        r = cvter.find_line_oriented(img, 70, 100, 90.0, 80, 30, p)
         self.assertTrue(r.found, r)
         self.assertLess(abs(r.center.x - x_edge), 1.0)
         self.assertLess(vert_dev_deg(r.angle), 1.5)
 
     def test_high_contrast_threshold_drops_weak_edge(self):
         img = vertical_step(140, 200, 70, left=160, right=130)
-        low = tinfer.CaliperParam()
+        low = cvter.CaliperParam()
         low.contrast = 8
-        high = tinfer.CaliperParam()
+        high = cvter.CaliperParam()
         high.contrast = 40
-        r_ok = tinfer.find_line(img, 40, 20, 110, 180, True, low)
-        r_miss = tinfer.find_line(img, 40, 20, 110, 180, True, high)
+        r_ok = cvter.find_line(img, 40, 20, 110, 180, True, low)
+        r_miss = cvter.find_line(img, 40, 20, 110, 180, True, high)
         self.assertTrue(r_ok.found, r_ok)
         self.assertFalse(r_miss.found, r_miss)
 
@@ -177,11 +177,11 @@ class TestFindCircleSynthetic(unittest.TestCase):
     def test_dark_hole_inner_to_outer(self):
         cx, cy, rad = 150.0, 140.0, 60.0
         img = dark_disk(280, cx, cy, rad)
-        p = tinfer.CaliperParam()
-        p.polarity = tinfer.CaliperPolarity.DarkToLight
+        p = cvter.CaliperParam()
+        p.polarity = cvter.CaliperPolarity.DarkToLight
         p.contrast = 12
         p.radialInward = False
-        r = tinfer.find_circle(img, cx + 3, cy - 2, rad, 18, 0, 360, p)
+        r = cvter.find_circle(img, cx + 3, cy - 2, rad, 18, 0, 360, p)
         self.assertTrue(r.found, r)
         self.assertLess(math.hypot(r.center.x - cx, r.center.y - cy), 1.5)
         self.assertLess(abs(r.radius - rad), 1.5)
@@ -190,19 +190,19 @@ class TestFindCircleSynthetic(unittest.TestCase):
 
     def test_wrong_polarity_or_tiny_search_fails(self):
         img = dark_disk()
-        p = tinfer.CaliperParam()
-        p.polarity = tinfer.CaliperPolarity.LightToDark
+        p = cvter.CaliperParam()
+        p.polarity = cvter.CaliperPolarity.LightToDark
         p.contrast = 18
-        r = tinfer.find_circle(img, 150, 140, 60, 18, 0, 360, p)
+        r = cvter.find_circle(img, 150, 140, 60, 18, 0, 360, p)
         self.assertFalse(r.found, r)
 
     def test_arc_half_circle(self):
         cx, cy, rad = 150.0, 140.0, 60.0
         img = dark_disk(280, cx, cy, rad)
-        p = tinfer.CaliperParam()
-        p.polarity = tinfer.CaliperPolarity.DarkToLight
+        p = cvter.CaliperParam()
+        p.polarity = cvter.CaliperPolarity.DarkToLight
         p.contrast = 12
-        r = tinfer.find_circle(img, cx, cy, rad, 16, -90, 90, p)
+        r = cvter.find_circle(img, cx, cy, rad, 16, -90, 90, p)
         self.assertTrue(r.found, r)
         self.assertLess(abs(r.radius - rad), 2.0)
 
@@ -216,11 +216,11 @@ class TestNutRealImage(unittest.TestCase):
         assert cls.gray is not None
 
     def test_two_json_vertical_edges(self):
-        p = tinfer.CaliperParam()
-        p.polarity = tinfer.CaliperPolarity.LightToDark
+        p = cvter.CaliperParam()
+        p.polarity = cvter.CaliperPolarity.LightToDark
         p.contrast = 18
-        lower = tinfer.find_line(self.gray, 290, 406, 327, 586, True, p)
-        upper = tinfer.find_line(self.gray, 363, 107, 424, 291, True, p)
+        lower = cvter.find_line(self.gray, 290, 406, 327, 586, True, p)
+        upper = cvter.find_line(self.gray, 363, 107, 424, 291, True, p)
         self.assertTrue(lower.found, lower)
         self.assertTrue(upper.found, upper)
         self.assertLess(vert_dev_deg(lower.angle), 2.0)
@@ -231,10 +231,10 @@ class TestNutRealImage(unittest.TestCase):
         self.assertGreater(upper.length, 120)
 
     def test_loc_hole_circle(self):
-        p = tinfer.CaliperParam()
-        p.polarity = tinfer.CaliperPolarity.DarkToLight
+        p = cvter.CaliperParam()
+        p.polarity = cvter.CaliperPolarity.DarkToLight
         p.contrast = 12
-        r = tinfer.find_circle(self.gray, 255, 250, 70, 20, 0, 360, p)
+        r = cvter.find_circle(self.gray, 255, 250, 70, 20, 0, 360, p)
         self.assertTrue(r.found, r)
         self.assertTrue(45 <= r.radius <= 95)
         self.assertTrue(180 <= r.center.x <= 330)
@@ -247,8 +247,8 @@ class TestNutBatchSmoke(unittest.TestCase):
     def test_first_20_both_rects_found(self):
         jpgs = sorted(p for p in NUT_BATCH.glob("*.jpg") if p.is_file())[:20]
         self.assertGreaterEqual(len(jpgs), 5)
-        cal = tinfer.CaliperWrapper()
-        cal.param.polarity = tinfer.CaliperPolarity.LightToDark
+        cal = cvter.CaliperWrapper()
+        cal.param.polarity = cvter.CaliperPolarity.LightToDark
         cal.param.contrast = 18
         miss = 0
         for path in jpgs:

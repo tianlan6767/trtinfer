@@ -2,7 +2,7 @@
 
 沿指定方向做 1D 灰度剖面，按极性取亚像素边缘点，再拟合直线或圆。适合 ROI 内方向已知的轮廓边（竖边、定位孔），比 Edge Drawing 更稳。
 
-源码：`src/cv_caliper/`，通过 pybind11 导出到 `tinfer`（`workspace/tinfer.so`）。
+源码：`src/cv_caliper/`，通过 pybind11 导出到 `cvter`（`workspace/cvter.so`）。
 
 ## 编译与测试
 
@@ -24,11 +24,11 @@ python3.12 ed_roi_lines.py --method both --limit 20
 ## Python API
 
 ```python
-import tinfer
+import cvter
 
-param = tinfer.CaliperParam()
-param.polarity = tinfer.CaliperPolarity.LightToDark
-param.select = tinfer.CaliperSelect.Strongest
+param = cvter.CaliperParam()
+param.polarity = cvter.CaliperPolarity.LightToDark
+param.select = cvter.CaliperSelect.Strongest
 param.contrast = 18
 param.stride = 2
 param.projection = 5
@@ -37,7 +37,7 @@ param.outlierRatio = 0.3
 param.minPoints = 8
 param.radialInward = False
 
-cal = tinfer.CaliperWrapper(param)
+cal = cvter.CaliperWrapper(param)
 
 # 轴对齐矩形。search_horizontal=True：沿 X 搜竖边
 line = cal.find_line(gray, x0, y0, x1, y1, search_horizontal=True)
@@ -47,15 +47,15 @@ line = cal.find_line(gray, x0, y0, x1, y1, search_horizontal=True)
 line = cal.find_line_oriented(gray, cx, cy, phi_deg=90, length1=80, length2=20)
 
 # 环形卡尺拟合圆。radius 为预期半径，search 为径向半宽（像素）
-param.polarity = tinfer.CaliperPolarity.DarkToLight  # 黑洞由内向外
+param.polarity = cvter.CaliperPolarity.DarkToLight  # 黑洞由内向外
 circle = cal.find_circle(gray, cx, cy, radius=70, search=20, start_deg=0, end_deg=360)
 ```
 
 也可以不建 Wrapper，直接调用模块函数（需传入 `param`）：
 
 ```python
-line = tinfer.find_line(gray, x0, y0, x1, y1, True, param)
-circle = tinfer.find_circle(gray, cx, cy, 70, 20, 0, 360, param)
+line = cvter.find_line(gray, x0, y0, x1, y1, True, param)
+circle = cvter.find_circle(gray, cx, cy, 70, 20, 0, 360, param)
 ```
 
 ### LineResult
@@ -118,8 +118,8 @@ circle = tinfer.find_circle(gray, cx, cy, 70, 20, 0, 360, param)
 两个 JSON 竖框（零件亮、背景暗）：
 
 ```python
-param.polarity = tinfer.CaliperPolarity.LightToDark
-param.select = tinfer.CaliperSelect.Strongest
+param.polarity = cvter.CaliperPolarity.LightToDark
+param.select = cvter.CaliperSelect.Strongest
 param.contrast = 18
 param.stride = 2
 ```
@@ -127,7 +127,7 @@ param.stride = 2
 定位通孔（内部黑洞，由内向外）：
 
 ```python
-param.polarity = tinfer.CaliperPolarity.DarkToLight
+param.polarity = cvter.CaliperPolarity.DarkToLight
 param.radialInward = False
 param.contrast = 12
 cal.find_circle(gray, cx, cy, radius=70, search=20)
