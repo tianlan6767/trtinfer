@@ -19,6 +19,8 @@ Python 全部用法（可拷贝）：[docs/python.md](docs/python.md)
 
 | 模块 | 文档 |
 |---|---|
+| 环境配置（Linux / WSL） | [docs/env.md](docs/env.md) |
+| 环境配置（Windows + VS2019） | [docs/env_windows.md](docs/env_windows.md) |
 | YOLO 检测 / 姿态 / 实例分割 / OBB / SAHI | [docs/yolo.md](docs/yolo.md) |
 | 图像分类 | [docs/classify.md](docs/classify.md) |
 | 异常分割 UVIAD | [docs/uviad.md](docs/uviad.md) |
@@ -244,26 +246,10 @@ circle = cal.find_circle(gray, cx, cy, 70, 20)
 - [x] **Python支持**：使用 **Pybind11** 封装，使用 **Pyton** 调用
 - [ ] **更多模型支持**：添加对其他 YOLO 模型版本的支持。目前支持 **YOLOv11/YOLOv11-Pose/YOLOv8/YOLOv5**
 
-## install
-```
-cd /home/lq67/workspace/lean/cv4110/opencv/build
-cmake -D CMAKE_BUILD_TYPE=Release \
-      -D CMAKE_INSTALL_PREFIX=/home/lq67/workspace/lean/cv4110/opencv4110 \
-      -D OPENCV_EXTRA_MODULES_PATH=/home/lq67/workspace/lean/cv4110/opencv_contrib/modules \
-      -D WITH_CUDA=ON \
-      -D CUDA_ARCH_BIN=8.6 \
-      -D WITH_CUDNN=ON \
-      -D OPENCV_DNN_CUDA=ON \
-      -D CUDNN_VERSION=9.5 \
-      -D CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-12.6 \
-      -D WITH_TENSORRT=ON \
-      -D TensorRT_INCLUDE_DIRS=/home/lq67/workspace/lean/TensorRT-10.11.0.33/include/ \
-      -D TensorRT_LIBRARIES="/home/lq67/workspace/lean/TensorRT-10.11.0.33/lib/libnvinfer.so;/home/lq67/workspace/lean/TensorRT-10.11.0.33/lib/libnvinfer_plugin.so;/home/lq67/workspace/lean/TensorRT-10.11.0.33/lib/libnvinfer_lean.so" \
-      -D WITH_GTK=ON \
-      -D BUILD_EXAMPLES=ON ..
-make -j$(nproc)
-make install
-```
+## 环境与依赖
+
+- **Linux / WSL**：CUDA 12.6 / TensorRT 10.11 / OpenCV 4.11 / cuDNN 9.5 / Python 3.12 → [docs/env.md](docs/env.md)（`Makefile`）
+- **Windows + VS2019**：CUDA 12.9 / TensorRT 10.11 / OpenCV 4.10（vc16）/ cuDNN 9.5 / Python 3.11 → [docs/env_windows.md](docs/env_windows.md)（`CMakeLists.txt` 的 `WIN32` 段）
 
 ## 创建clangd环境
 1️⃣ 安装/检查
