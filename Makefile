@@ -128,6 +128,16 @@ test-scale :
 		$$(pkg-config --cflags --libs opencv4)
 	@$(objdir)/test_scale_match
 
+# 预处理 + Blob：只编 cv_blob，不链 TensorRT / CUDA。需要 pkg-config opencv4。
+test-blob :
+	@mkdir -p $(objdir)
+	@$(cc) -std=$(stdcpp) -O2 -fopenmp -pthread -I$(srcdir) \
+		$(CURDIR)/tests/test_blob.cpp \
+		$(srcdir)/cv_blob/blob.cpp \
+		-o $(objdir)/test_blob \
+		$$(pkg-config --cflags --libs opencv4)
+	@$(objdir)/test_blob
+
 test-deeplab : $(name)
 	@PYTHONPATH=$(CURDIR)/$(workdir) $(python) $(CURDIR)/tests/test_deeplabv3.py -v
 
@@ -171,4 +181,4 @@ $(objdir)/%.cu.mk : $(srcdir)/%.cu
 clean :
 	@rm -rf $(objdir) $(workdir)/$(name) $(workdir)/pro  $(workdir)/imgs
 
-.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab test-scale
+.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab test-scale test-blob

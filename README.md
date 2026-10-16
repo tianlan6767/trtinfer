@@ -28,11 +28,13 @@ Python 全部用法（可拷贝）：[docs/python.md](docs/python.md)
 | 灰度模板匹配 NCC | [docs/pattern_match.md](docs/pattern_match.md) |
 | 形状匹配 | [docs/shape_match.md](docs/shape_match.md) |
 | 卡尺测量 | [docs/caliper.md](docs/caliper.md) |
+| 预处理 / Blob | [docs/blob.md](docs/blob.md) |
 | 灰度匹配实现变更 | [docs/cv_match_update.md](docs/cv_match_update.md) |
 
 ```bash
 make -j
 make test-caliper test-match test-shape test-deeplab
+make test-blob test-scale   # 只编经典视觉，不需要 TensorRT
 # 推理脚本：cd workspace && /usr/local/bin/python3.12 test.py
 ```
 
@@ -239,6 +241,12 @@ cp.polarity = cvter.CaliperPolarity.LightToDark
 cal = cvter.CaliperWrapper(cp)
 line = cal.find_line(gray, x0, y0, x1, y1, True)
 circle = cal.find_circle(gray, cx, cy, 70, 20)
+
+th = cvter.ThresholdParam()
+th.value = 120
+binary = cvter.morphology(cvter.threshold(gray, th), cvter.MorphParam())
+for b in cvter.find_blobs(binary):
+    print(b.center, b.area, b.circularity)
 ```
 
 ## TODO
