@@ -32,7 +32,8 @@ NUT_IMG = WORKSPACE / "match_img" / "nut" / (
 )
 
 
-def make_matcher(angle=0, score=0.55, max_count=1, min_area=256, stop_layer=0, mean_border=True):
+def make_matcher(angle=0, score=0.55, max_count=1, min_area=256, stop_layer=0, mean_border=True,
+                 min_scale=1.0, max_scale=1.0, scale_step=0.05, num_scales=0):
     p = cvter.MatcherParam()
     p.matcherType = cvter.MatcherType.PATTERN
     p.angle = float(angle)
@@ -42,6 +43,10 @@ def make_matcher(angle=0, score=0.55, max_count=1, min_area=256, stop_layer=0, m
     p.iouThreshold = 0.3
     p.meanBorder = bool(mean_border)
     p.stopLayer = int(stop_layer)
+    p.minScale = float(min_scale)
+    p.maxScale = float(max_scale)
+    p.scaleStep = float(scale_step)
+    p.numScales = int(num_scales)
     return cvter.MatcherWrapper(p)
 
 
@@ -81,6 +86,47 @@ class TestPatternMatchSynthetic(unittest.TestCase):
         self.assertLess(abs(r.LeftTop.y - y0), 2.0)
         self.assertLess(abs(r.Center.x - (x0 + patch.shape[1] / 2)), 2.5)
         self.assertLess(abs(r.Angle), 1.5)
+        self.assertAlmostEqual(r.Scale, 1.0, places=3)
+
+    def test_find_scaled(self):
+        patch = make_asymmetric_patch()
+        scale = 1.25
+        scaled = cv2.resize(patch, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+        canvas = np.full((460, 560), 40, np.uint8)
+        x0, y0 = 150, 120
+        paste(canvas, scaled, x0, y0)
+        m = make_matcher(angle=0, score=0.55, min_scale=0.9, max_scale=1.5, scale_step=0.1)
+        m.setTemplate(patch)
+        r = best(m.match(canvas))
+        self.assertIsNotNone(r, "缩放后的目标应被尺度搜索找到")
+        self.assertGreater(r.Score, 0.7)
+        self.assertLess(abs(r.Scale - scale), 0.11)
+        cx = x0 + scaled.shape[1] / 2.0
+        cy = y0 + scaled.shape[0] / 2.0
+        self.assertLess(math.hypot(r.Center.x - cx, r.Center.y - cy), 12.0)
+
+    def test_find_scaled_with_mask(self):
+        patch = make_asymmetric_patch()
+        h, w = patch.shape
+        scale = 1.2
+        scaled = cv2.resize(patch, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+        canvas = np.full((460, 560), 40, np.uint8)
+        x0, y0 = 140, 100
+        paste(canvas, scaled, x0, y0)
+        mask = np.zeros_like(patch)
+        mask[6:h - 6, 6:16] = 255
+        mask[6:h - 6, w - 16:w - 6] = 255
+        mask[6:16, 6:w - 6] = 255
+        mask[h - 16:h - 6, 6:w - 6] = 255
+        m = make_matcher(angle=0, score=0.45, min_scale=0.9, max_scale=1.45, scale_step=0.1)
+        m.setTemplate(patch, mask)
+        r = best(m.match(canvas))
+        self.assertIsNotNone(r, "带 mask 的 NCC 也应搜到缩放目标")
+        self.assertGreater(r.Score, 0.45)
+        self.assertLess(abs(r.Scale - scale), 0.11)
+        cx = x0 + scaled.shape[1] / 2.0
+        cy = y0 + scaled.shape[0] / 2.0
+        self.assertLess(math.hypot(r.Center.x - cx, r.Center.y - cy), 14.0)
 
     def test_find_rotated(self):
         patch = make_asymmetric_patch()

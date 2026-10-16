@@ -751,31 +751,92 @@ namespace template_matching {
 
 	}
 
-	int PatternMatcher::match(const cv::Mat& image, std::vector<MatchResult>& matchResults)
+	void SuppressOverlap(vector<MatchResult>& results, double maxOverlap, int maxCount)
+	{
+		if (maxCount < 1)
+			maxCount = 1;
+		std::sort(results.begin(), results.end(), [](const MatchResult& a, const MatchResult& b) {
+			return a.Score > b.Score;
+		});
+		vector<MatchResult> kept;
+		for (const MatchResult& cand : results)
+		{
+			vector<Point2f> ptsA{
+				Point2f((float)cand.LeftTop.x, (float)cand.LeftTop.y),
+				Point2f((float)cand.RightTop.x, (float)cand.RightTop.y),
+				Point2f((float)cand.RightBottom.x, (float)cand.RightBottom.y),
+				Point2f((float)cand.LeftBottom.x, (float)cand.LeftBottom.y)};
+			if (ptsA.size() < 3)
+				continue;
+			RotatedRect rectA = minAreaRect(ptsA);
+			bool drop = false;
+			for (const MatchResult& prev : kept)
+			{
+				vector<Point2f> ptsB{
+					Point2f((float)prev.LeftTop.x, (float)prev.LeftTop.y),
+					Point2f((float)prev.RightTop.x, (float)prev.RightTop.y),
+					Point2f((float)prev.RightBottom.x, (float)prev.RightBottom.y),
+					Point2f((float)prev.LeftBottom.x, (float)prev.LeftBottom.y)};
+				RotatedRect rectB = minAreaRect(ptsB);
+				vector<Point2f> inter;
+				int typ = rotatedRectangleIntersection(rectA, rectB, inter);
+				if (typ == INTERSECT_NONE)
+					continue;
+				if (typ == INTERSECT_FULL)
+				{
+					drop = true;
+					break;
+				}
+				if (inter.size() < 3)
+					continue;
+				vector<Point2f> hull;
+				convexHull(Mat(inter), hull, true);
+				double area = contourArea(hull);
+				double base = std::max(1.0, (double)rectB.size.area());
+				if (area / base > maxOverlap)
+				{
+					drop = true;
+					break;
+				}
+			}
+			if (drop)
+				continue;
+			kept.push_back(cand);
+			if ((int)kept.size() >= maxCount)
+				break;
+		}
+		results.swap(kept);
+	}
+
+	int PatternMatcher::matchPrepared(const cv::Mat& image, const cv::Mat& templImage, s_TemplData& templData,
+									  std::vector<MatchResult>& matchResults)
 	{
 		matchResults.clear();
 		if (image.empty())
 			return -1;
-		if (templateImage_.empty() || templateImage_.channels() != 1)
+		if (templImage.empty() || templImage.channels() != 1)
 		{
 			logger_->error("image empty or channels != 1.");
 			return -5;
 		}
-		if ((templateImage_.cols < image.cols && templateImage_.rows > image.rows) || (templateImage_.cols > image.cols && templateImage_.rows < image.rows))
+		if ((templImage.cols < image.cols && templImage.rows > image.rows) || (templImage.cols > image.cols && templImage.rows < image.rows))
 			return -2;
-		if (templateImage_.size().area() > image.size().area())
+		if (templImage.size().area() > image.size().area())
 			return -3;
-		if (!m_TemplData.bIsPatternLearned)
+		if (!templData.bIsPatternLearned)
 			return -4;
 
 		double d1 = clock();
 		//決定金字塔層數 總共為1 + iLayer層
-		int iTopLayer = GetTopLayer(&templateImage_, (int)sqrt((double)matchParam_.minArea));
+		cv::Mat templView = templImage;
+		int iTopLayer = GetTopLayer(&templView, (int)sqrt((double)matchParam_.minArea));
 		//建立金字塔
 		vector<Mat> vecMatSrcPyr;
 		buildPyramid(image, vecMatSrcPyr, iTopLayer);
 
-		s_TemplData* pTemplData = &m_TemplData;
+		s_TemplData* pTemplData = &templData;
+		if (!pTemplData->vecPyramid.empty())
+			iTopLayer = std::min(iTopLayer, (int)pTemplData->vecPyramid.size() - 1);
 
 		//第一階段以最頂層找出大致角度與ROI
 		double dAngleStep = atan(2.0 / max(pTemplData->vecPyramid[iTopLayer].cols, pTemplData->vecPyramid[iTopLayer].rows)) * R2D;
@@ -1102,24 +1163,117 @@ namespace template_matching {
 		return (int)matchResults.size();
 	}
 
+	int PatternMatcher::match(const cv::Mat& image, std::vector<MatchResult>& matchResults)
+	{
+		matchResults.clear();
+		if (!scaleSearch_)
+		{
+			int n = matchPrepared(image, templateImage_, m_TemplData, matchResults);
+			for (MatchResult& r : matchResults)
+				r.Scale = 1.0;
+			return n;
+		}
+
+		if (scaledPatterns_.empty())
+			return -4;
+		std::vector<MatchResult> all;
+		int lastErr = -4;
+		bool anyOk = false;
+		for (ScaledPattern& sp : scaledPatterns_)
+		{
+			std::vector<MatchResult> part;
+			int n = matchPrepared(image, sp.image, sp.data, part);
+			if (n < 0)
+			{
+				lastErr = n;
+				continue;
+			}
+			anyOk = true;
+			for (MatchResult& r : part)
+			{
+				r.Scale = sp.scale;
+				all.push_back(r);
+			}
+		}
+		if (!anyOk)
+			return lastErr;
+		SuppressOverlap(all, matchParam_.iouThreshold, matchParam_.maxCount);
+		matchResults.swap(all);
+		return (int)matchResults.size();
+	}
+
 	int PatternMatcher::setTemplate(const cv::Mat& templateImage, const cv::Mat& mask)
 	{
+		scaledPatterns_.clear();
+		templateMask_.release();
+		scaleSearch_ = scaleSearchEnabled(matchParam_);
 		if (templateImage.empty())
 			return -1;
 		if (templateImage.channels() > 1)
 			return -2;
 		m_TemplData.bIsPatternLearned = false;
 
-		templateImage_ = templateImage.clone();
-		LearnPattern(m_TemplData, templateImage_, matchParam_.minArea, mask);
-		if (!m_TemplData.bIsPatternLearned)
+		if (!scaleSearch_)
 		{
-			logger_->error("LearnPattern failed (check mask size/channels).");
-			return -3;
+			templateImage_ = templateImage.clone();
+			LearnPattern(m_TemplData, templateImage_, matchParam_.minArea, mask);
+			if (!m_TemplData.bIsPatternLearned)
+			{
+				logger_->error("LearnPattern failed (check mask size/channels).");
+				return -3;
+			}
+			return 0;
 		}
 
-		return 0;
+		templateImage_ = templateImage.clone();
+		if (!mask.empty())
+		{
+			if (mask.size() != templateImage_.size() || mask.channels() != 1)
+			{
+				logger_->error("LearnPattern failed (check mask size/channels).");
+				return -3;
+			}
+			templateMask_ = mask.clone();
+		}
 
+		const std::vector<double> scales = sampleMatchScales(matchParam_);
+		double minArea = matchParam_.minArea;
+		for (double s : scales)
+		{
+			ScaledPattern sp;
+			sp.scale = s;
+			cv::Mat layerMask;
+			if (std::fabs(s - 1.0) < 1e-4)
+			{
+				sp.image = templateImage_.clone();
+				layerMask = templateMask_;
+			}
+			else
+			{
+				const int w = std::max(1, (int)std::lround(templateImage_.cols * s));
+				const int h = std::max(1, (int)std::lround(templateImage_.rows * s));
+				if (w < 8 || h < 8)
+					continue;
+				const int interp = s < 1.0 ? cv::INTER_AREA : cv::INTER_LINEAR;
+				cv::resize(templateImage_, sp.image, cv::Size(w, h), 0, 0, interp);
+				if (!templateMask_.empty())
+				{
+					cv::resize(templateMask_, layerMask, sp.image.size(), 0, 0, cv::INTER_NEAREST);
+					cv::threshold(layerMask, layerMask, 0, 255, cv::THRESH_BINARY);
+				}
+			}
+			LearnPattern(sp.data, sp.image, minArea, layerMask);
+			if (!sp.data.bIsPatternLearned)
+				continue;
+			scaledPatterns_.push_back(std::move(sp));
+		}
+		if (scaledPatterns_.empty())
+		{
+			logger_->error("LearnPattern failed for all scales (check mask size/channels).");
+			return -3;
+		}
+		m_TemplData.bIsPatternLearned = true;
+		return 0;
 	}
 
 }

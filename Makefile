@@ -115,6 +115,19 @@ test-match : $(name)
 test-shape : $(name)
 	@PYTHONPATH=$(CURDIR)/$(workdir) $(python) $(CURDIR)/tests/test_shape_match.py -v
 
+# 尺度搜索：只编 cv_match，不链 TensorRT / CUDA。需要 pkg-config opencv4。
+test-scale :
+	@mkdir -p $(objdir)
+	@$(cc) -std=$(stdcpp) -O2 -fopenmp -pthread -I$(srcdir) -I$(srcdir)/3rdParty/spdlog/include \
+		$(CURDIR)/tests/test_scale_match.cpp \
+		$(srcdir)/cv_match/PatternMatching.cpp \
+		$(srcdir)/cv_match/ShapeMatching.cpp \
+		$(srcdir)/cv_match/base_matcher.cpp \
+		$(srcdir)/cv_match/matcher.cpp \
+		-o $(objdir)/test_scale_match \
+		$$(pkg-config --cflags --libs opencv4)
+	@$(objdir)/test_scale_match
+
 test-deeplab : $(name)
 	@PYTHONPATH=$(CURDIR)/$(workdir) $(python) $(CURDIR)/tests/test_deeplabv3.py -v
 
@@ -158,4 +171,4 @@ $(objdir)/%.cu.mk : $(srcdir)/%.cu
 clean :
 	@rm -rf $(objdir) $(workdir)/$(name) $(workdir)/pro  $(workdir)/imgs
 
-.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab
+.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab test-scale

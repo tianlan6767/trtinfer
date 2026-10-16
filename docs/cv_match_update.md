@@ -84,7 +84,7 @@ C++：`setTemplate(templ, mask=cv::Mat())`。
 ## 5. 明确不做（后续）
 
 - **顶层改转模板**（NCC）：模板一转包围盒变大，必须配合 mask，坐标和 `GetBestRotationSize` 整条链要重验，本轮不动。  
-- **尺度搜索**：当前金字塔只加速，不搜尺度。  
+- **尺度搜索**：已支持。`MatcherParam.minScale` / `maxScale` / `scaleStep` / `numScales` 对 `PATTERN` 和 `SHAPE` 都生效；默认 `minScale=maxScale=1` 只搜原尺度。灰度 NCC 在每个尺度上缩放模板和 mask 后走原金字塔；形状匹配缩放边缘点并在下层细化半个步长。结果 `MatchResult.Scale`。说明见 [pattern_match.md](pattern_match.md)、[shape_match.md](shape_match.md)。不依赖 TensorRT。  
 - **用 NCC 读近圆微小转角**：应用层继续定位 + 卡尺测边；转角优先用 `SHAPE` 或卡尺。
 
 形状匹配已落地，见 [docs/shape_match.md](docs/shape_match.md)。

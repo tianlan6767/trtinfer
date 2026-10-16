@@ -76,6 +76,14 @@ namespace template_matching
 		// 形状匹配：0~1，越大越早放弃不可能达到阈值的位置
 		double greediness = 0.9;
 
+		// 尺度搜索（相对模板）。minScale=maxScale=1 时只搜原尺度，与旧行为一致。
+		double minScale = 1.0;
+		double maxScale = 1.0;
+		// minScale!=maxScale 且 numScales<=1 时的步长；<=0 则按 0.05
+		double scaleStep = 0.05;
+		// >1 时在 [minScale, maxScale] 上均匀取这么多个（含端点），此时忽略 scaleStep
+		int numScales = 0;
+
 	};
 	
 	// 匹配结果
@@ -89,11 +97,12 @@ namespace template_matching
 
 		double Angle; // 角度
 		double Score; // 匹配得分
+		double Scale; // 相对模板的尺度，1 为原大小
 
 	// 默认构造函数，初始化所有成员
     MatchResult()
         : LeftTop(0,0), LeftBottom(0,0), RightTop(0,0), RightBottom(0,0), Center(0,0),
-          Angle(0.0), Score(0.0)
+          Angle(0.0), Score(0.0), Scale(1.0)
     {};	
 	};
 

@@ -25,7 +25,8 @@ NUT_IMG = WORKSPACE / "match_img" / "nut" / (
 )
 
 
-def make_shape_matcher(angle=0, score=0.45, max_count=1, min_area=256):
+def make_shape_matcher(angle=0, score=0.45, max_count=1, min_area=256,
+                        min_scale=1.0, max_scale=1.0, scale_step=0.05, num_scales=0):
     p = cvter.MatcherParam()
     p.matcherType = cvter.MatcherType.SHAPE
     p.angle = float(angle)
@@ -36,6 +37,10 @@ def make_shape_matcher(angle=0, score=0.45, max_count=1, min_area=256):
     p.maxEdgePoints = 280
     p.usePolarity = True
     p.greediness = 0.85
+    p.minScale = float(min_scale)
+    p.maxScale = float(max_scale)
+    p.scaleStep = float(scale_step)
+    p.numScales = int(num_scales)
     return cvter.MatcherWrapper(p)
 
 
@@ -71,6 +76,24 @@ class TestShapeSynthetic(unittest.TestCase):
         self.assertLess(abs(r.Center.x - (x0 + patch.shape[1] / 2)), 4.0)
         self.assertLess(abs(r.Center.y - (y0 + patch.shape[0] / 2)), 4.0)
         self.assertLess(abs(r.Angle), 2.5)
+        self.assertAlmostEqual(r.Scale, 1.0, places=3)
+
+    def test_find_scaled(self):
+        patch = make_l_shape()
+        scale = 1.25
+        scaled = cv2.resize(patch, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+        canvas = np.full((420, 480), 30, np.uint8)
+        x0, y0 = 140, 110
+        paste(canvas, scaled, x0, y0)
+        m = make_shape_matcher(angle=0, score=0.4, min_scale=0.9, max_scale=1.5, scale_step=0.1)
+        m.setTemplate(patch)
+        r = best(m.match(canvas))
+        self.assertIsNotNone(r, "缩放后的 L 形应被形状尺度搜索找到")
+        self.assertGreater(r.Score, 0.45)
+        self.assertLess(abs(r.Scale - scale), 0.12)
+        cx = x0 + scaled.shape[1] / 2.0
+        cy = y0 + scaled.shape[0] / 2.0
+        self.assertLess(math.hypot(r.Center.x - cx, r.Center.y - cy), 12.0)
 
     def test_find_rotated(self):
         patch = make_l_shape()

@@ -213,6 +213,18 @@ bool extractEdges(const cv::Mat& gray, const cv::Mat& mask8, double minMag, int 
 	return edges.size() >= 12;
 }
 
+std::vector<ShapeEdgePt> scaleEdges(const std::vector<ShapeEdgePt>& src, double scale)
+{
+	std::vector<ShapeEdgePt> out = src;
+	const float s = (float)scale;
+	for (auto& e : out)
+	{
+		e.dx *= s;
+		e.dy *= s;
+	}
+	return out;
+}
+
 std::vector<ShapeEdgePt> rotateModel(const std::vector<ShapeEdgePt>& src, double angleDeg)
 {
 	// 与 OpenCV getRotationMatrix2D 一致：图像坐标 y 向下，正角为画面逆时针
@@ -254,11 +266,11 @@ double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const
 	return sum / n;
 }
 
-MatchResult packResult(double cx, double cy, double angleDeg, double score, int tw, int th)
+MatchResult packResult(double cx, double cy, double angleDeg, double score, int tw, int th, double objScale)
 {
 	const double rad = angleDeg * kD2R;
 	const double c = std::cos(rad), s = std::sin(rad);
-	const double hw = (tw - 1) * 0.5, hh = (th - 1) * 0.5;
+	const double hw = (tw - 1) * 0.5 * objScale, hh = (th - 1) * 0.5 * objScale;
 	auto map = [&](double lx, double ly) {
 		return cv::Point2d(cx + lx * c + ly * s, cy - lx * s + ly * c);
 	};
@@ -270,6 +282,7 @@ MatchResult packResult(double cx, double cy, double angleDeg, double score, int 
 	r.Center = cv::Point2d(cx, cy);
 	r.Angle = angleDeg;
 	r.Score = score;
+	r.Scale = objScale;
 	return r;
 }
 
@@ -308,6 +321,23 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, double an
 ShapeMatcher::ShapeMatcher(const MatcherParam& param)
 {
 	initFinishedFlag_ = initMatcher(param);
+	scales_ = sampleMatchScales(matchParam_);
+	scaleSearch_ = scaleSearchEnabled(matchParam_);
+	scaleMin_ = scales_.front();
+	scaleMax_ = scales_.back();
+	for (double s : scales_)
+	{
+		scaleMin_ = std::min(scaleMin_, s);
+		scaleMax_ = std::max(scaleMax_, s);
+	}
+	scaleDs_ = 0.0;
+	if (scales_.size() >= 2)
+	{
+		double gap = 1e9;
+		for (size_t i = 1; i < scales_.size(); ++i)
+			gap = std::min(gap, std::fabs(scales_[i] - scales_[i - 1]));
+		scaleDs_ = 0.5 * gap;
+	}
 }
 
 int ShapeMatcher::setTemplate(const cv::Mat& templateImage, const cv::Mat& mask)
@@ -377,7 +407,10 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	cv::Mat gray = toGray(frame);
 	if (gray.empty())
 		return -1;
-	if (gray.cols < templW_ || gray.rows < templH_)
+	const double fitScale = scaleSearch_ ? scaleMin_ : 1.0;
+	const int needW = std::max(1, (int)std::floor((double)templW_ * fitScale));
+	const int needH = std::max(1, (int)std::floor((double)templH_ * fitScale));
+	if (gray.cols < needW || gray.rows < needH)
 		return -3;
 
 	const int top = (int)layers_.size() - 1;
@@ -395,6 +428,11 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 
 	const ShapeLayer& topModel = layers_[top];
 	double angStep = angleStepDeg(topModel.edges);
+	if (scaleSearch_)
+	{
+		const float scaledR = std::max(1.f, modelRadius(topModel.edges) * (float)scaleMax_);
+		angStep = std::max(0.25, std::atan(1.0 / scaledR) * kR2D);
+	}
 	std::vector<double> angles;
 	if (matchParam_.angle < 1e-6)
 		angles.push_back(0.0);
@@ -416,32 +454,79 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	const double greed = matchParam_.greediness;
 
 	std::vector<ShapeCandidate> coarse;
-#pragma omp parallel
+	if (!scaleSearch_)
 	{
-		std::vector<ShapeCandidate> local;
-#pragma omp for schedule(dynamic)
-		for (int ai = 0; ai < (int)angles.size(); ++ai)
+#pragma omp parallel
 		{
-			const auto model = rotateModel(topModel.edges, angles[ai]);
-			for (int y = margin; y < pyr[top].rows - margin; y += stride)
+			std::vector<ShapeCandidate> local;
+#pragma omp for schedule(dynamic)
+			for (int ai = 0; ai < (int)angles.size(); ++ai)
 			{
-				for (int x = margin; x < pyr[top].cols - margin; x += stride)
+				const auto model = rotateModel(topModel.edges, angles[ai]);
+				for (int y = margin; y < pyr[top].rows - margin; y += stride)
 				{
-					const double sc = scorePose(model, nx[top], ny[top], x, y, polarity, greed, coarseTh);
-					if (sc < coarseTh)
-						continue;
-					ShapeCandidate c;
-					c.cx = x;
-					c.cy = y;
-					c.angle = angles[ai];
-					c.score = sc;
-					local.push_back(c);
+					for (int x = margin; x < pyr[top].cols - margin; x += stride)
+					{
+						const double sc = scorePose(model, nx[top], ny[top], x, y, polarity, greed, coarseTh);
+						if (sc < coarseTh)
+							continue;
+						ShapeCandidate c;
+						c.cx = x;
+						c.cy = y;
+						c.angle = angles[ai];
+						c.score = sc;
+						local.push_back(c);
+					}
 				}
 			}
-		}
 #pragma omp critical
+			{
+				coarse.insert(coarse.end(), local.begin(), local.end());
+			}
+		}
+	}
+	else
+	{
+		const int scaleStride = std::max(1, std::min(tw, th) / 12);
+		std::vector<std::pair<int, int>> jobs;
+		jobs.reserve(angles.size() * scales_.size());
+		for (int ai = 0; ai < (int)angles.size(); ++ai)
+			for (int si = 0; si < (int)scales_.size(); ++si)
+				jobs.emplace_back(ai, si);
+#pragma omp parallel
 		{
-			coarse.insert(coarse.end(), local.begin(), local.end());
+			std::vector<ShapeCandidate> local;
+#pragma omp for schedule(dynamic)
+			for (int ji = 0; ji < (int)jobs.size(); ++ji)
+			{
+				const int ai = jobs[ji].first;
+				const double objScale = scales_[jobs[ji].second];
+				const auto model = scaleEdges(rotateModel(topModel.edges, angles[ai]), objScale);
+				int mgn = (int)std::ceil(maxR * (float)objScale) + 1;
+				mgn = std::min(mgn, std::max(1, std::min(pyr[top].rows, pyr[top].cols) / 4));
+				if (mgn * 2 + scaleStride >= pyr[top].rows || mgn * 2 + scaleStride >= pyr[top].cols)
+					mgn = std::max(1, std::min(pyr[top].rows, pyr[top].cols) / 10);
+				for (int y = mgn; y < pyr[top].rows - mgn; y += scaleStride)
+				{
+					for (int x = mgn; x < pyr[top].cols - mgn; x += scaleStride)
+					{
+						const double sc = scorePose(model, nx[top], ny[top], x, y, polarity, greed, coarseTh);
+						if (sc < coarseTh)
+							continue;
+						ShapeCandidate c;
+						c.cx = x;
+						c.cy = y;
+						c.angle = angles[ai];
+						c.score = sc;
+						c.scale = objScale;
+						local.push_back(c);
+					}
+				}
+			}
+#pragma omp critical
+			{
+				coarse.insert(coarse.end(), local.begin(), local.end());
+			}
 		}
 	}
 
@@ -472,26 +557,79 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				for (int k = -3; k <= 3; ++k)
 					angs.push_back(c0.angle + k * step);
 			}
-			for (double ang : angs)
+			if (!scaleSearch_)
 			{
-				const auto model = rotateModel(mdl.edges, ang);
-				for (int dy = -rad; dy <= rad; ++dy)
+				for (double ang : angs)
 				{
-					for (int dx = -rad; dx <= rad; ++dx)
+					const auto model = rotateModel(mdl.edges, ang);
+					for (int dy = -rad; dy <= rad; ++dy)
 					{
-						const double cx = cx0 + dx;
-						const double cy = cy0 + dy;
-						if (cx < 2 || cy < 2 || cx >= pyr[layer].cols - 2 || cy >= pyr[layer].rows - 2)
-							continue;
-						const double sc = scorePose(model, nx[layer], ny[layer], cx, cy, polarity, greed,
-												   matchParam_.scoreThreshold * 0.6);
-						if (sc > bestS)
+						for (int dx = -rad; dx <= rad; ++dx)
 						{
-							bestS = sc;
-							best.cx = cx;
-							best.cy = cy;
-							best.angle = ang;
-							best.score = sc;
+							const double cx = cx0 + dx;
+							const double cy = cy0 + dy;
+							if (cx < 2 || cy < 2 || cx >= pyr[layer].cols - 2 || cy >= pyr[layer].rows - 2)
+								continue;
+							const double sc = scorePose(model, nx[layer], ny[layer], cx, cy, polarity, greed,
+													   matchParam_.scoreThreshold * 0.6);
+							if (sc > bestS)
+							{
+								bestS = sc;
+								best.cx = cx;
+								best.cy = cy;
+								best.angle = ang;
+								best.score = sc;
+							}
+						}
+					}
+				}
+			}
+			else
+			{
+				std::vector<double> tryScales;
+				for (int ks = -1; ks <= 1; ++ks)
+				{
+					double s = c0.scale + ks * scaleDs_;
+					if (s < scaleMin_)
+						s = scaleMin_;
+					if (s > scaleMax_)
+						s = scaleMax_;
+					bool dup = false;
+					for (double prev : tryScales)
+					{
+						if (std::fabs(prev - s) < 1e-6)
+							dup = true;
+					}
+					if (!dup)
+						tryScales.push_back(s);
+				}
+				const int radS = 4;
+				for (double ang : angs)
+				{
+					const auto rotated = rotateModel(mdl.edges, ang);
+					for (double objScale : tryScales)
+					{
+						const auto model = scaleEdges(rotated, objScale);
+						for (int dy = -radS; dy <= radS; ++dy)
+						{
+							for (int dx = -radS; dx <= radS; ++dx)
+							{
+								const double cx = cx0 + dx;
+								const double cy = cy0 + dy;
+								if (cx < 2 || cy < 2 || cx >= pyr[layer].cols - 2 || cy >= pyr[layer].rows - 2)
+									continue;
+								const double sc = scorePose(model, nx[layer], ny[layer], cx, cy, polarity, greed,
+														   matchParam_.scoreThreshold * 0.6);
+								if (sc > bestS)
+								{
+									bestS = sc;
+									best.cx = cx;
+									best.cy = cy;
+									best.angle = ang;
+									best.scale = objScale;
+									best.score = sc;
+								}
+							}
 						}
 					}
 				}
@@ -505,12 +643,12 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	}
 
 	nmsCandidates(refined, 0.5 * std::min(templW_, templH_), 4.0, matchParam_.maxCount);
-	const int scale = 1 << stopLayer;
+	const int pyrScale = 1 << stopLayer;
 	for (const auto& c : refined)
 	{
 		if (c.score < matchParam_.scoreThreshold)
 			continue;
-		matchResults.push_back(packResult(c.cx * scale, c.cy * scale, c.angle, c.score, templW_, templH_));
+		matchResults.push_back(packResult(c.cx * pyrScale, c.cy * pyrScale, c.angle, c.score, templW_, templH_, c.scale));
 		if ((int)matchResults.size() >= matchParam_.maxCount)
 			break;
 	}
