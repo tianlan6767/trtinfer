@@ -496,6 +496,10 @@ PYBIND11_MODULE(cvter, m){
         .def_readwrite("maxEdgePoints", &template_matching::MatcherParam::maxEdgePoints)
         .def_readwrite("usePolarity", &template_matching::MatcherParam::usePolarity)
         .def_readwrite("greediness", &template_matching::MatcherParam::greediness)
+        .def_readwrite("minScale", &template_matching::MatcherParam::minScale)
+        .def_readwrite("maxScale", &template_matching::MatcherParam::maxScale)
+        .def_readwrite("scaleStep", &template_matching::MatcherParam::scaleStep)
+        .def_readwrite("numScales", &template_matching::MatcherParam::numScales)
         .def("__repr__", [](const template_matching::MatcherParam &param) {
             std::ostringstream oss;
             oss << "MatcherParam(matcherType: " << static_cast<int>(param.matcherType)
@@ -510,6 +514,10 @@ PYBIND11_MODULE(cvter, m){
                 << ", maxEdgePoints: " << param.maxEdgePoints
                 << ", usePolarity: " << (param.usePolarity ? "true" : "false")
                 << ", greediness: " << param.greediness
+                << ", minScale: " << param.minScale
+                << ", maxScale: " << param.maxScale
+                << ", scaleStep: " << param.scaleStep
+                << ", numScales: " << param.numScales
                 << ")";
             return oss.str();
         });
@@ -525,6 +533,7 @@ PYBIND11_MODULE(cvter, m){
         .def_readwrite("Center", &template_matching::MatchResult::Center)
         .def_readwrite("Angle", &template_matching::MatchResult::Angle)
         .def_readwrite("Score", &template_matching::MatchResult::Score)
+        .def_readwrite("Scale", &template_matching::MatchResult::Scale)
         .def("__repr__", [](const template_matching::MatchResult &r){
             std::ostringstream oss;
             oss << "MatchResult(LeftTop=(" << r.LeftTop.x << "," << r.LeftTop.y << ")"
@@ -534,6 +543,7 @@ PYBIND11_MODULE(cvter, m){
                 << ", Center=(" << r.Center.x << "," << r.Center.y << ")"
                 << ", Angle=" << r.Angle
                 << ", Score=" << r.Score
+                << ", Scale=" << r.Scale
                 << ")";
             return oss.str();
         });

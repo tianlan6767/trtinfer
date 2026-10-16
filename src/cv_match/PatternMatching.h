@@ -241,7 +241,20 @@ namespace template_matching
 		virtual int setTemplate(const cv::Mat& templateImage, const cv::Mat& mask = cv::Mat()) override;
 
 	private:
+		struct ScaledPattern
+		{
+			double scale = 1.0;
+			cv::Mat image;
+			s_TemplData data;
+		};
+
+		int matchPrepared(const cv::Mat& image, const cv::Mat& templImage, s_TemplData& templData,
+						  std::vector<MatchResult>& matchResults);
+
 		s_TemplData m_TemplData;
+		cv::Mat templateMask_;
+		std::vector<ScaledPattern> scaledPatterns_;
+		bool scaleSearch_ = false;
 		bool m_bDebugMode = false;
 		bool m_bSubPixel = true;
 	};

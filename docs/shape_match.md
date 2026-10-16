@@ -35,6 +35,9 @@ param.maxEdgePoints = 320
 param.usePolarity = True      # 明暗方向要一致
 param.greediness = 0.9
 param.maxCount = 1
+param.minScale = 1.0          # 与 maxScale 都为 1 时不搜尺度
+param.maxScale = 1.0
+param.scaleStep = 0.05        # 拉开 min/max 后使用；或 numScales>1
 
 m = cvter.MatcherWrapper(param)
 m.setTemplate(templ)                 # 或 m.setTemplate(templ, mask)
@@ -51,22 +54,24 @@ hits = m.match(gray)
 | `usePolarity` | true | true 要求亮暗方向一致；反光/曝光反了可 false |
 | `greediness` | 0.9 | 越大越早放弃不可能过阈值的位置 |
 | `angle` / `minArea` / `scoreThreshold` / `maxCount` / `stopLayer` | 同 NCC | 金字塔与搜索范围 |
+| `minScale` / `maxScale` / `scaleStep` / `numScales` | 同 NCC | 尺度网格；默认只搜 1 |
 
-分数是所有模型点上 `n_model · n_image` 的平均（单位法向点积），约等于方向余弦。1 为完全一致。`Angle` 与 OpenCV `getRotationMatrix2D` 相同：图像坐标 y 向下，正角为画面逆时针。
+分数是所有模型点上 `n_model · n_image` 的平均（单位法向点积），约等于方向余弦。1 为完全一致。`Angle` 与 OpenCV `getRotationMatrix2D` 相同：图像坐标 y 向下，正角为画面逆时针。`Scale` 是相对模板的尺度，四角按该尺度放大。
 
 ## 算法摘要
 
 1. 学模板：Sobel → 梯度幅值局部极大 → 存相对中心的 `(dx,dy)` 和单位法向 `(nx,ny)`；可选 mask。  
 2. 建搜索图金字塔并预计算单位梯度。  
-3. 顶层：各角度旋转模型点，滑窗打分（OpenMP）。  
-4. 下层：在候选附近 ±3 px、±2 个角度步长精搜。  
+3. 顶层：各角度旋转模型点；若开启尺度搜索，再按采样尺度放大点的位置（法向不变），滑窗打分（OpenMP，角度×尺度）。  
+4. 下层：在候选附近 ±3 px（尺度搜索时 ±4 px）、±3 个角度步长精搜；尺度在采样间隔的一半内再试三个值。  
 5. 按中心距/角度 NMS，输出旋转矩形。
 
-无尺度搜索（与当前 NCC 一样）。
+`minScale=maxScale=1`（默认）时不进入尺度分支，只搜尺度 1。
 
 ## 测试
 
 ```bash
 make test-shape
 make test-match
+make test-scale    # 只编 cv_match，验证尺度≠1，不需要 TensorRT
 ```

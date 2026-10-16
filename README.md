@@ -228,10 +228,11 @@ dl = cvter.TrtInfer("deeplab.trtmodel", cvter.ModelType.DEEPLABV3, ["_background
 p = cvter.MatcherParam()
 p.matcherType = cvter.MatcherType.PATTERN   # 或 SHAPE
 p.angle = 8
+p.minScale = 1.0                            # 默认不搜尺度；改 min/max/scaleStep 可搜缩放
 m = cvter.MatcherWrapper(p)
 m.setTemplate(templ)                        # 可选 m.setTemplate(templ, mask)
 hit = m.match(gray)[0]
-print(hit.Center, hit.Angle, hit.Score)
+print(hit.Center, hit.Angle, hit.Score, hit.Scale)
 
 cp = cvter.CaliperParam()
 cp.polarity = cvter.CaliperPolarity.LightToDark

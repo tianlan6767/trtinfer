@@ -27,6 +27,7 @@ struct ShapeCandidate
 	double cy = 0;
 	double angle = 0;
 	double score = 0;
+	double scale = 1.0;
 };
 
 class ShapeMatcher : public BaseMatcher
@@ -41,6 +42,11 @@ public:
 private:
 	std::vector<ShapeLayer> layers_;
 	bool learned_ = false;
+	bool scaleSearch_ = false;
+	double scaleMin_ = 1.0;
+	double scaleMax_ = 1.0;
+	double scaleDs_ = 0.0;
+	std::vector<double> scales_{1.0};
 	int templW_ = 0;
 	int templH_ = 0;
 };

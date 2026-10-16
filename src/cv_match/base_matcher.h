@@ -9,6 +9,7 @@
 #include <chrono>
 #include "matcher.h"
 #include "omp.h"
+#include <vector>
 
 
 namespace template_matching
@@ -51,6 +52,10 @@ namespace template_matching
 		bool metricsTime_ = false;
 
 		std::shared_ptr<spdlog::logger> logger_;
+
+		// 按 MatcherParam 采样尺度。默认只返回 {1}。
+		static std::vector<double> sampleMatchScales(const MatcherParam& param);
+		static bool scaleSearchEnabled(const MatcherParam& param);
 
 
 	private:

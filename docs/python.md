@@ -217,12 +217,15 @@ param.minArea = 256
 param.iouThreshold = 0.3
 param.meanBorder = True
 param.stopLayer = 0
+param.minScale = 1.0             # 与 maxScale 都为 1 时不搜尺度
+param.maxScale = 1.0
+param.scaleStep = 0.05           # 或 numScales>1 均匀取样
 
 m = cvter.MatcherWrapper(param)
 m.setTemplate(templ)                 # 灰度图
-# m.setTemplate(templ, mask)         # mask 非 0 为有效像素
+# m.setTemplate(templ, mask)         # mask 非 0 为有效像素；尺度搜索时 mask 一并缩放
 for r in m.match(gray):
-    print(r.Center.x, r.Center.y, r.Angle, r.Score)
+    print(r.Center.x, r.Center.y, r.Angle, r.Score, r.Scale)
     print(r.LeftTop, r.RightTop, r.RightBottom, r.LeftBottom)
 ```
 
@@ -241,6 +244,9 @@ param.edgeMinMag = 18
 param.maxEdgePoints = 320
 param.usePolarity = True
 param.greediness = 0.9
+param.minScale = 1.0
+param.maxScale = 1.0
+param.scaleStep = 0.05
 m = cvter.MatcherWrapper(param)
 m.setTemplate(templ)
 hits = m.match(gray)
@@ -283,7 +289,7 @@ circle = cvter.find_circle(gray, cx, cy, 70, 20, 0, 360, param)
 
 **ClsAttribute**：`class_id score`
 
-**MatchResult**：`LeftTop LeftBottom RightTop RightBottom Center Angle Score`  
-点是 `cvter.Point2d`（`.x` / `.y`）。`Angle` 与 OpenCV `getRotationMatrix2D` 相同（画面逆时针为正）。
+**MatchResult**：`LeftTop LeftBottom RightTop RightBottom Center Angle Score Scale`  
+点是 `cvter.Point2d`（`.x` / `.y`）。`Angle` 与 OpenCV `getRotationMatrix2D` 相同（画面逆时针为正）。`Scale` 相对模板，默认匹配为 1。
 
 **LineResult / CircleResult**：见 [caliper.md](caliper.md)。
