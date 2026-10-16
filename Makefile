@@ -138,6 +138,17 @@ test-blob :
 		$$(pkg-config --cflags --libs opencv4)
 	@$(objdir)/test_blob
 
+# 矩形卡尺 + 测量：只编 cv_caliper，不链 TensorRT / CUDA。
+test-rect :
+	@mkdir -p $(objdir)
+	@$(cc) -std=$(stdcpp) -O2 -fopenmp -pthread -I$(srcdir) \
+		$(CURDIR)/tests/test_rect_metrology.cpp \
+		$(srcdir)/cv_caliper/caliper.cpp \
+		$(srcdir)/cv_caliper/metrology.cpp \
+		-o $(objdir)/test_rect \
+		$$(pkg-config --cflags --libs opencv4)
+	@$(objdir)/test_rect
+
 test-deeplab : $(name)
 	@PYTHONPATH=$(CURDIR)/$(workdir) $(python) $(CURDIR)/tests/test_deeplabv3.py -v
 
@@ -181,4 +192,4 @@ $(objdir)/%.cu.mk : $(srcdir)/%.cu
 clean :
 	@rm -rf $(objdir) $(workdir)/$(name) $(workdir)/pro  $(workdir)/imgs
 
-.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab test-scale test-blob
+.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab test-scale test-blob test-rect

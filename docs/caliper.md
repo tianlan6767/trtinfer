@@ -169,3 +169,45 @@ auto circle = caliper::findCircle(gray, {cx, cy}, 70.0, 20.0, 0.0, 360.0, param)
 ```
 
 `findLineOriented` 的 `phi` 是**弧度**；Python `find_line_oriented` 的 `phi_deg` 是**角度**。
+
+## 找矩形
+
+四条边各放一组卡尺，拟合直线后求交得到四个角。搜索方向指向矩形内部，所以亮目标、暗背景用 `DarkToLight`（与单边「从外向内」一致）。`angle_deg` 与 `find_line_oriented` 的 `phi_deg` 相同：0 沿 +X，正方向朝 +Y。
+
+预期位姿不用很准，但每条边的真实边缘要落在 `search` 半宽里。边长至少约 12 px。结果相对预期宽高偏离过大（约 `2*search + 0.25*边长`，至少 8 px）或转角超过 20° 时 `found=false`。
+
+```python
+param.polarity = cvter.CaliperPolarity.DarkToLight
+param.contrast = 12
+rect = cvter.find_rectangle(gray, cx, cy, width, height, angle_deg=7, search=16, param=param)
+# 或轴对齐预期框
+rect = cvter.find_rectangle_box(gray, x0, y0, x1, y1, search=12, param=param)
+print(rect.found, rect.center, rect.width, rect.height, rect.angle)
+print(rect.topLeft, rect.topRight, rect.bottomRight, rect.bottomLeft)
+```
+
+`CaliperWrapper.find_rectangle` / `find_rectangle_box` 使用 wrapper 里的 `param`。
+
+四条边的 `LineResult` 在 `rect.top / right / bottom / left`。
+
+## 测量辅助
+
+与卡尺、Blob 的点线结果配合，不跑图像：
+
+| 函数 | 含义 |
+|---|---|
+| `distance_points(x0,y0,x1,y1)` | 两点距离 |
+| `distance_point_line(px,py,x0,y0,x1,y1)` | 点到无限直线 |
+| `distance_lines(...)` | 两直线间距。近似平行时是法向距离 |
+| `angle_lines(...)` | 方向夹角，度，`[0, 90]` |
+| `fit_line(points)` | 点集 SVD 拟合，返回 `LineFit` |
+| `summarize_rectangle(tlx,tly,trx,tr_y,brx,bry,blx,bly)` | 四角汇总宽、高、中心、角度 |
+| `summarize_circle(cx,cy,radius)` | 直径写在 `diameter`，宽高都等于直径 |
+
+```cpp
+#include "cv_caliper/metrology.h"
+double d = metrology::distancePoints(a, b);
+auto summary = metrology::summarizeRectangle(tl, tr, br, bl);
+```
+
+不依赖 TensorRT 的测试：`make test-rect`。完整模块编出来后跑 `tests/test_rect_metrology.py`。

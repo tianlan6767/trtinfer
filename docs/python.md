@@ -274,9 +274,14 @@ circle = cal.find_circle(gray, cx, cy, radius=70, search=20, start_deg=0, end_de
 # 也可以不建 Wrapper
 line = cvter.find_line(gray, x0, y0, x1, y1, True, param)
 circle = cvter.find_circle(gray, cx, cy, 70, 20, 0, 360, param)
+
+param.polarity = cvter.CaliperPolarity.DarkToLight
+rect = cvter.find_rectangle(gray, cx, cy, 150, 90, angle_deg=7, search=16, param=param)
+print(rect.center, rect.width, rect.height, rect.angle)
+print(cvter.distance_points(0, 0, 3, 4), cvter.angle_lines(0, 0, 10, 0, 0, 0, 0, 10))
 ```
 
-`line.found` / `circle.found` 为 False 表示没拟合上。完整说明：[caliper.md](caliper.md)。
+`line.found` / `circle.found` / `rect.found` 为 False 表示没拟合上。矩形搜索指向内部。完整说明：[caliper.md](caliper.md)。
 
 ---
 

@@ -8,6 +8,7 @@
 #include "trt/infer.hpp"
 #include "cv_match/matcher.h"
 #include "cv_caliper/caliper.h"
+#include "cv_caliper/metrology.h"
 #include "cv_blob/blob.h"
 
 #define UNUSED(expr) do { (void)(expr); } while (0)
@@ -349,6 +350,19 @@ public:
     {
         return caliper::findCircle(img, cv::Point2d(cx, cy), radius, search, start_deg, end_deg, param);
     }
+
+    caliper::RectResult find_rectangle(const cv::Mat& img, double cx, double cy, double width, double height,
+                                       double angle_deg, double search) const
+    {
+        return caliper::findRectangle(img, cv::Point2d(cx, cy), width, height, angle_deg * CV_PI / 180.0,
+                                      search, param);
+    }
+
+    caliper::RectResult find_rectangle_box(const cv::Mat& img, double x0, double y0, double x1, double y1,
+                                           double search) const
+    {
+        return caliper::findRectangleBox(img, x0, y0, x1, y1, search, param);
+    }
 };
 
 PYBIND11_MODULE(cvter, m){
@@ -655,7 +669,13 @@ PYBIND11_MODULE(cvter, m){
              py::arg("length1"), py::arg("length2"))
         .def("find_circle", &CaliperWrapper::find_circle,
              py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("radius"),
-             py::arg("search") = 15.0, py::arg("start_deg") = 0.0, py::arg("end_deg") = 360.0);
+             py::arg("search") = 15.0, py::arg("start_deg") = 0.0, py::arg("end_deg") = 360.0)
+        .def("find_rectangle", &CaliperWrapper::find_rectangle,
+             py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("width"), py::arg("height"),
+             py::arg("angle_deg") = 0.0, py::arg("search") = 12.0)
+        .def("find_rectangle_box", &CaliperWrapper::find_rectangle_box,
+             py::arg("image"), py::arg("x0"), py::arg("y0"), py::arg("x1"), py::arg("y1"),
+             py::arg("search") = 12.0);
 
     m.def("find_line",
           [](const cv::Mat& img, double x0, double y0, double x1, double y1,
@@ -682,6 +702,111 @@ PYBIND11_MODULE(cvter, m){
           py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("radius"),
           py::arg("search") = 15.0, py::arg("start_deg") = 0.0, py::arg("end_deg") = 360.0,
           py::arg("param") = caliper::CaliperParam());
+
+    py::class_<caliper::RectResult>(m, "RectResult")
+        .def(py::init<>())
+        .def_readwrite("found", &caliper::RectResult::found)
+        .def_readwrite("center", &caliper::RectResult::center)
+        .def_readwrite("width", &caliper::RectResult::width)
+        .def_readwrite("height", &caliper::RectResult::height)
+        .def_readwrite("angle", &caliper::RectResult::angle)
+        .def_readwrite("rms", &caliper::RectResult::rms)
+        .def_readwrite("topLeft", &caliper::RectResult::topLeft)
+        .def_readwrite("topRight", &caliper::RectResult::topRight)
+        .def_readwrite("bottomRight", &caliper::RectResult::bottomRight)
+        .def_readwrite("bottomLeft", &caliper::RectResult::bottomLeft)
+        .def_readwrite("top", &caliper::RectResult::top)
+        .def_readwrite("right", &caliper::RectResult::right)
+        .def_readwrite("bottom", &caliper::RectResult::bottom)
+        .def_readwrite("left", &caliper::RectResult::left)
+        .def("__repr__", [](const caliper::RectResult& r) {
+            std::ostringstream oss;
+            oss << "RectResult(found=" << (r.found ? "true" : "false")
+                << ", center=(" << r.center.x << "," << r.center.y << ")"
+                << ", width=" << r.width
+                << ", height=" << r.height
+                << ", angle=" << r.angle
+                << ", rms=" << r.rms
+                << ")";
+            return oss.str();
+        });
+
+    m.def("find_rectangle",
+          [](const cv::Mat& img, double cx, double cy, double width, double height, double angle_deg,
+             double search, const caliper::CaliperParam& param) {
+              return caliper::findRectangle(img, cv::Point2d(cx, cy), width, height,
+                                            angle_deg * CV_PI / 180.0, search, param);
+          },
+          py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("width"), py::arg("height"),
+          py::arg("angle_deg") = 0.0, py::arg("search") = 12.0,
+          py::arg("param") = caliper::CaliperParam());
+
+    m.def("find_rectangle_box",
+          [](const cv::Mat& img, double x0, double y0, double x1, double y1, double search,
+             const caliper::CaliperParam& param) {
+              return caliper::findRectangleBox(img, x0, y0, x1, y1, search, param);
+          },
+          py::arg("image"), py::arg("x0"), py::arg("y0"), py::arg("x1"), py::arg("y1"),
+          py::arg("search") = 12.0, py::arg("param") = caliper::CaliperParam());
+
+    py::class_<metrology::LineFit>(m, "LineFit")
+        .def(py::init<>())
+        .def_readwrite("found", &metrology::LineFit::found)
+        .def_readwrite("p1", &metrology::LineFit::p1)
+        .def_readwrite("p2", &metrology::LineFit::p2)
+        .def_readwrite("center", &metrology::LineFit::center)
+        .def_readwrite("direction", &metrology::LineFit::direction)
+        .def_readwrite("angle", &metrology::LineFit::angle)
+        .def_readwrite("rms", &metrology::LineFit::rms)
+        .def_readwrite("length", &metrology::LineFit::length)
+        .def_readwrite("numPoints", &metrology::LineFit::numPoints);
+
+    py::class_<metrology::SizeSummary>(m, "SizeSummary")
+        .def(py::init<>())
+        .def_readwrite("found", &metrology::SizeSummary::found)
+        .def_readwrite("center", &metrology::SizeSummary::center)
+        .def_readwrite("width", &metrology::SizeSummary::width)
+        .def_readwrite("height", &metrology::SizeSummary::height)
+        .def_readwrite("angle", &metrology::SizeSummary::angle)
+        .def_readwrite("diameter", &metrology::SizeSummary::diameter);
+
+    m.def("distance_points",
+          [](double x0, double y0, double x1, double y1) {
+              return metrology::distancePoints(cv::Point2d(x0, y0), cv::Point2d(x1, y1));
+          },
+          py::arg("x0"), py::arg("y0"), py::arg("x1"), py::arg("y1"));
+    m.def("distance_point_line",
+          [](double px, double py, double x0, double y0, double x1, double y1) {
+              return metrology::distancePointToLine(cv::Point2d(px, py), cv::Point2d(x0, y0), cv::Point2d(x1, y1));
+          },
+          py::arg("px"), py::arg("py"), py::arg("x0"), py::arg("y0"), py::arg("x1"), py::arg("y1"));
+    m.def("distance_lines",
+          [](double ax0, double ay0, double ax1, double ay1, double bx0, double by0, double bx1, double by1) {
+              return metrology::distanceBetweenLines(cv::Point2d(ax0, ay0), cv::Point2d(ax1, ay1),
+                                                     cv::Point2d(bx0, by0), cv::Point2d(bx1, by1));
+          },
+          py::arg("ax0"), py::arg("ay0"), py::arg("ax1"), py::arg("ay1"),
+          py::arg("bx0"), py::arg("by0"), py::arg("bx1"), py::arg("by1"));
+    m.def("angle_lines",
+          [](double ax0, double ay0, double ax1, double ay1, double bx0, double by0, double bx1, double by1) {
+              return metrology::angleBetweenLines(cv::Point2d(ax0, ay0), cv::Point2d(ax1, ay1),
+                                                  cv::Point2d(bx0, by0), cv::Point2d(bx1, by1));
+          },
+          py::arg("ax0"), py::arg("ay0"), py::arg("ax1"), py::arg("ay1"),
+          py::arg("bx0"), py::arg("by0"), py::arg("bx1"), py::arg("by1"));
+    m.def("fit_line", &metrology::fitLine, py::arg("points"));
+    m.def("summarize_rectangle",
+          [](double tlx, double tly, double trx, double try_, double brx, double bry, double blx, double bly) {
+              return metrology::summarizeRectangle(cv::Point2d(tlx, tly), cv::Point2d(trx, try_),
+                                                   cv::Point2d(brx, bry), cv::Point2d(blx, bly));
+          },
+          py::arg("tlx"), py::arg("tly"), py::arg("trx"), py::arg("tr_y"),
+          py::arg("brx"), py::arg("bry"), py::arg("blx"), py::arg("bly"));
+    m.def("summarize_circle",
+          [](double cx, double cy, double radius) {
+              return metrology::summarizeCircle(cv::Point2d(cx, cy), radius);
+          },
+          py::arg("cx"), py::arg("cy"), py::arg("radius"));
 
     // -----------------------------
     // 预处理 + Blob
