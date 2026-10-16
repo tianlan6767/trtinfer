@@ -25,6 +25,7 @@ import cv2
 | 灰度模板匹配 | [pattern_match.md](pattern_match.md) |
 | 形状匹配 | [shape_match.md](shape_match.md) |
 | 卡尺 | [caliper.md](caliper.md) |
+| 预处理 / Blob | [blob.md](blob.md) |
 
 ---
 
@@ -279,7 +280,31 @@ circle = cvter.find_circle(gray, cx, cy, 70, 20, 0, 360, param)
 
 ---
 
-## 12. 结果类型
+## 12. 预处理与 Blob
+
+不需要 TensorRT。非 0 为前景，Blob 坐标在原图上。
+
+```python
+th = cvter.ThresholdParam()
+th.type = cvter.ThresholdType.Otsu
+binary = cvter.threshold(cvter.gaussian_blur(gray, 5, 1.0), th)
+
+morph = cvter.MorphParam()
+morph.op = cvter.MorphOp.Close
+binary = cvter.morphology(binary, morph)
+
+filt = cvter.BlobFilter()
+filt.minArea = 40
+filt.minCircularity = 0.6
+for b in cvter.find_blobs(binary, filt):
+    print(b.center, b.area, b.circularity, b.aspect)
+```
+
+`crop_roi` / `median_blur` / `contour_stats` 以及过滤字段见 [blob.md](blob.md)。
+
+---
+
+## 13. 结果类型
 
 **Box**：`left top right bottom score class_id class_name`
 
@@ -293,3 +318,7 @@ circle = cvter.find_circle(gray, cx, cy, 70, 20, 0, 360, param)
 点是 `cvter.Point2d`（`.x` / `.y`）。`Angle` 与 OpenCV `getRotationMatrix2D` 相同（画面逆时针为正）。`Scale` 相对模板，默认匹配为 1。
 
 **LineResult / CircleResult**：见 [caliper.md](caliper.md)。
+
+**Blob**：`label area perimeter circularity aspect angle center left top width height`。`center` 是 `Point2d`。`area` 为像素个数，圆度用外轮廓。
+
+**ContourStats**：字段与 Blob 类似，`area` 是轮廓折线面积。见 [blob.md](blob.md)。

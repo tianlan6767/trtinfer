@@ -8,6 +8,7 @@
 #include "trt/infer.hpp"
 #include "cv_match/matcher.h"
 #include "cv_caliper/caliper.h"
+#include "cv_blob/blob.h"
 
 #define UNUSED(expr) do { (void)(expr); } while (0)
 
@@ -681,4 +682,78 @@ PYBIND11_MODULE(cvter, m){
           py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("radius"),
           py::arg("search") = 15.0, py::arg("start_deg") = 0.0, py::arg("end_deg") = 360.0,
           py::arg("param") = caliper::CaliperParam());
+
+    // -----------------------------
+    // 预处理 + Blob
+    // -----------------------------
+    py::enum_<blob::ThresholdType>(m, "ThresholdType")
+        .value("Fixed", blob::ThresholdType::Fixed)
+        .value("Otsu", blob::ThresholdType::Otsu)
+        .export_values();
+
+    py::enum_<blob::MorphOp>(m, "MorphOp")
+        .value("Erode", blob::MorphOp::Erode)
+        .value("Dilate", blob::MorphOp::Dilate)
+        .value("Open", blob::MorphOp::Open)
+        .value("Close", blob::MorphOp::Close)
+        .export_values();
+
+    py::class_<blob::ThresholdParam>(m, "ThresholdParam")
+        .def(py::init<>())
+        .def_readwrite("type", &blob::ThresholdParam::type)
+        .def_readwrite("value", &blob::ThresholdParam::value)
+        .def_readwrite("maxValue", &blob::ThresholdParam::maxValue)
+        .def_readwrite("invert", &blob::ThresholdParam::invert);
+
+    py::class_<blob::MorphParam>(m, "MorphParam")
+        .def(py::init<>())
+        .def_readwrite("op", &blob::MorphParam::op)
+        .def_readwrite("ksize", &blob::MorphParam::ksize)
+        .def_readwrite("iterations", &blob::MorphParam::iterations);
+
+    py::class_<blob::BlobFilter>(m, "BlobFilter")
+        .def(py::init<>())
+        .def_readwrite("minArea", &blob::BlobFilter::minArea)
+        .def_readwrite("maxArea", &blob::BlobFilter::maxArea)
+        .def_readwrite("minCircularity", &blob::BlobFilter::minCircularity)
+        .def_readwrite("maxCircularity", &blob::BlobFilter::maxCircularity)
+        .def_readwrite("minAspect", &blob::BlobFilter::minAspect)
+        .def_readwrite("maxAspect", &blob::BlobFilter::maxAspect)
+        .def_readwrite("maxCount", &blob::BlobFilter::maxCount);
+
+    py::class_<blob::ContourStats>(m, "ContourStats")
+        .def(py::init<>())
+        .def_readwrite("area", &blob::ContourStats::area)
+        .def_readwrite("perimeter", &blob::ContourStats::perimeter)
+        .def_readwrite("circularity", &blob::ContourStats::circularity)
+        .def_readwrite("aspect", &blob::ContourStats::aspect)
+        .def_readwrite("angle", &blob::ContourStats::angle)
+        .def_readwrite("center", &blob::ContourStats::center)
+        .def_readwrite("left", &blob::ContourStats::left)
+        .def_readwrite("top", &blob::ContourStats::top)
+        .def_readwrite("width", &blob::ContourStats::width)
+        .def_readwrite("height", &blob::ContourStats::height);
+
+    py::class_<blob::Blob>(m, "Blob")
+        .def(py::init<>())
+        .def_readwrite("label", &blob::Blob::label)
+        .def_readwrite("area", &blob::Blob::area)
+        .def_readwrite("perimeter", &blob::Blob::perimeter)
+        .def_readwrite("circularity", &blob::Blob::circularity)
+        .def_readwrite("aspect", &blob::Blob::aspect)
+        .def_readwrite("angle", &blob::Blob::angle)
+        .def_readwrite("center", &blob::Blob::center)
+        .def_readwrite("left", &blob::Blob::left)
+        .def_readwrite("top", &blob::Blob::top)
+        .def_readwrite("width", &blob::Blob::width)
+        .def_readwrite("height", &blob::Blob::height);
+
+    m.def("crop_roi", &blob::cropRoi, py::arg("image"), py::arg("x"), py::arg("y"), py::arg("width"), py::arg("height"));
+    m.def("gaussian_blur", &blob::gaussianBlur, py::arg("image"), py::arg("ksize") = 5, py::arg("sigma") = 0.0);
+    m.def("median_blur", &blob::medianBlur, py::arg("image"), py::arg("ksize") = 5);
+    m.def("threshold", &blob::threshold, py::arg("image"), py::arg("param") = blob::ThresholdParam());
+    m.def("morphology", &blob::morphology, py::arg("image"), py::arg("param") = blob::MorphParam());
+    m.def("contour_stats", &blob::contourStats, py::arg("binary"));
+    m.def("find_blobs", &blob::findBlobs, py::arg("binary"), py::arg("filter") = blob::BlobFilter(),
+          py::arg("roi_x") = 0, py::arg("roi_y") = 0, py::arg("roi_w") = 0, py::arg("roi_h") = 0);
 };
