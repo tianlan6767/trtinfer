@@ -34,7 +34,7 @@ Python 全部用法（可拷贝）：[docs/python.md](docs/python.md)
 ```bash
 make -j
 make test-caliper test-match test-shape test-deeplab
-make test-blob test-scale   # 只编经典视觉，不需要 TensorRT
+make test-blob test-rect test-scale   # 只编经典视觉，不需要 TensorRT
 # 推理脚本：cd workspace && /usr/local/bin/python3.12 test.py
 ```
 
@@ -241,6 +241,9 @@ cp.polarity = cvter.CaliperPolarity.LightToDark
 cal = cvter.CaliperWrapper(cp)
 line = cal.find_line(gray, x0, y0, x1, y1, True)
 circle = cal.find_circle(gray, cx, cy, 70, 20)
+rp = cvter.CaliperParam()
+rp.polarity = cvter.CaliperPolarity.DarkToLight  # 亮矩形、暗背景，搜索指向内部
+rect = cvter.find_rectangle(gray, cx, cy, 150, 90, 0, 12, rp)
 
 th = cvter.ThresholdParam()
 th.value = 120

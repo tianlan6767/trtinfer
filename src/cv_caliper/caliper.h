@@ -87,4 +87,37 @@ CircleResult findCircle(const cv::Mat& image,
                         double endDeg = 360.0,
                         const CaliperParam& param = CaliperParam());
 
+// 四边卡尺拟合矩形。phi 与 findLineOriented 相同：弧度，0 沿 +X，正方向朝 +Y。
+// 每条边的搜索方向指向矩形内部。亮目标、暗背景用 DarkToLight。
+struct RectResult {
+    bool found = false;
+    cv::Point2d center;
+    double width = 0.0;
+    double height = 0.0;
+    double angle = 0.0;
+    double rms = 0.0;
+    cv::Point2d topLeft;
+    cv::Point2d topRight;
+    cv::Point2d bottomRight;
+    cv::Point2d bottomLeft;
+    LineResult top;
+    LineResult right;
+    LineResult bottom;
+    LineResult left;
+};
+
+RectResult findRectangle(const cv::Mat& image,
+                         cv::Point2d center,
+                         double width,
+                         double height,
+                         double phi,
+                         double search,
+                         const CaliperParam& param = CaliperParam());
+
+// 轴对齐预期框。search 是每条边的搜索半宽。
+RectResult findRectangleBox(const cv::Mat& image,
+                            double x0, double y0, double x1, double y1,
+                            double search,
+                            const CaliperParam& param = CaliperParam());
+
 }  // namespace caliper

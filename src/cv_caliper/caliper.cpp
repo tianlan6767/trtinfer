@@ -1,4 +1,5 @@
 #include "cv_caliper/caliper.h"
+#include "cv_caliper/metrology.h"
 
 #include <algorithm>
 #include <cmath>
@@ -570,6 +571,125 @@ CircleResult findCircle(const cv::Mat& image,
     out.numPoints = static_cast<int>(pts.size());
     out.numInliers = static_cast<int>(inliers.size());
     return out;
+}
+
+namespace
+{
+
+double angDiffDeg(double a, double b)
+{
+    double d = std::fmod(a - b, 180.0);
+    if (d > 90.0) {
+        d -= 180.0;
+    }
+    if (d < -90.0) {
+        d += 180.0;
+    }
+    return std::abs(d);
+}
+
+double sideHalfSpan(double sideLen, double search)
+{
+    const double half = 0.5 * sideLen;
+    const double inset = std::min(half * 0.35, std::max(4.0, 0.5 * search));
+    double span = half - inset;
+    if (span < 4.0) {
+        span = std::max(4.0, half * 0.7);
+    }
+    return span;
+}
+
+LineResult measureSide(const cv::Mat& image,
+                       cv::Point2d mid,
+                       cv::Point2d along,
+                       cv::Point2d inward,
+                       double halfLen,
+                       double search,
+                       const CaliperParam& param)
+{
+    cv::Point2d searchDir(along.y, -along.x);
+    const double s = std::hypot(searchDir.x, searchDir.y);
+    if (s > 1e-12) {
+        searchDir.x /= s;
+        searchDir.y /= s;
+    }
+    if (searchDir.x * inward.x + searchDir.y * inward.y < 0.0) {
+        along.x = -along.x;
+        along.y = -along.y;
+    }
+    const double phi = std::atan2(along.y, along.x);
+    return findLineOriented(image, mid, phi, halfLen, search, param);
+}
+
+}  // namespace
+
+RectResult findRectangle(const cv::Mat& image,
+                         cv::Point2d center,
+                         double width,
+                         double height,
+                         double phi,
+                         double search,
+                         const CaliperParam& param)
+{
+    RectResult out;
+    if (image.empty() || width < 12.0 || height < 12.0 || search < 3.0) {
+        return out;
+    }
+    const cv::Point2d ux(std::cos(phi), std::sin(phi));
+    const cv::Point2d uy(-std::sin(phi), std::cos(phi));
+    const double hw = 0.5 * width;
+    const double hh = 0.5 * height;
+
+    out.right = measureSide(image, center + ux * hw, uy, -ux, sideHalfSpan(height, search), search, param);
+    out.left = measureSide(image, center - ux * hw, uy, ux, sideHalfSpan(height, search), search, param);
+    out.bottom = measureSide(image, center + uy * hh, ux, -uy, sideHalfSpan(width, search), search, param);
+    out.top = measureSide(image, center - uy * hh, ux, uy, sideHalfSpan(width, search), search, param);
+
+    if (!out.top.found || !out.right.found || !out.bottom.found || !out.left.found) {
+        return out;
+    }
+    cv::Point2d tl, tr, br, bl;
+    if (!metrology::intersectLines(out.top.p1, out.top.p2, out.left.p1, out.left.p2, tl) ||
+        !metrology::intersectLines(out.top.p1, out.top.p2, out.right.p1, out.right.p2, tr) ||
+        !metrology::intersectLines(out.bottom.p1, out.bottom.p2, out.right.p1, out.right.p2, br) ||
+        !metrology::intersectLines(out.bottom.p1, out.bottom.p2, out.left.p1, out.left.p2, bl)) {
+        return out;
+    }
+    const metrology::SizeSummary summary = metrology::summarizeRectangle(tl, tr, br, bl);
+    out.topLeft = tl;
+    out.topRight = tr;
+    out.bottomRight = br;
+    out.bottomLeft = bl;
+    out.center = summary.center;
+    out.width = summary.width;
+    out.height = summary.height;
+    out.angle = summary.angle;
+    out.rms = 0.25 * (out.top.rms + out.right.rms + out.bottom.rms + out.left.rms);
+
+    const double wTol = std::max(8.0, 2.0 * search + 0.25 * width);
+    const double hTol = std::max(8.0, 2.0 * search + 0.25 * height);
+    const double expectDeg = phi * 180.0 / kPi;
+    out.found = summary.found &&
+                std::abs(out.width - width) <= wTol &&
+                std::abs(out.height - height) <= hTol &&
+                angDiffDeg(out.angle, expectDeg) <= 20.0 &&
+                std::isfinite(out.rms);
+    return out;
+}
+
+RectResult findRectangleBox(const cv::Mat& image,
+                            double x0, double y0, double x1, double y1,
+                            double search,
+                            const CaliperParam& param)
+{
+    if (x1 < x0) {
+        std::swap(x0, x1);
+    }
+    if (y1 < y0) {
+        std::swap(y0, y1);
+    }
+    const cv::Point2d center(0.5 * (x0 + x1), 0.5 * (y0 + y1));
+    return findRectangle(image, center, x1 - x0, y1 - y0, 0.0, search, param);
 }
 
 }  // namespace caliper
