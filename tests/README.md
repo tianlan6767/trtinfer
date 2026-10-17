@@ -1,5 +1,7 @@
 # 传统视觉测试
 
+能力对照（已实现 / 依赖可选 / 未实现）见 [docs/feature_checklist.md](../docs/feature_checklist.md)。
+
 数值测试（有的要完整 `workspace/cvter.so`，含 CUDA / TensorRT）：
 
 ```bash
