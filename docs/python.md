@@ -18,6 +18,7 @@ import cv2
 
 | 模块 | 文档 |
 |---|---|
+| 功能清单（已实现 / 依赖可选 / 未实现） | [feature_checklist.md](feature_checklist.md) |
 | YOLO 检测 / 姿态 / 实例分割 / OBB / SAHI | [yolo.md](yolo.md) |
 | 分类 | [classify.md](classify.md) |
 | 异常分割 UVIAD | [uviad.md](uviad.md) |
