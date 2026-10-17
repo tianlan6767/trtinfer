@@ -79,13 +79,23 @@ C++：`setTemplate(templ, mask=cv::Mat())`。
 
 `setTemplate` 增加可选第二参 `mask`。
 
-结果 `MatchResult` 字段不变。
+结果 `MatchResult` 增加 `Scale`（相对模板的采样尺度，默认匹配为 1）。
+
+### 4.1 尺度搜索（PATTERN 和 SHAPE 都有）
+
+`MatcherParam.minScale` / `maxScale` / `scaleStep` / `numScales` 对灰度 NCC 和形状匹配**都生效**。默认 `minScale=maxScale=1`，只搜原尺度。
+
+- `PATTERN`：每个尺度缩放模板和 mask，再走原来的金字塔 + 角度 NCC。
+- `SHAPE`：按该尺度放大边缘点（法向不变），下层在采样间隔的一半内再试三个尺度。
+
+`MatchResult.Scale` 是命中的采样尺度，四角按这个尺寸给出。说明见 [pattern_match.md](pattern_match.md)、[shape_match.md](shape_match.md)。`make test-scale` 不依赖 TensorRT。
 
 ## 5. 明确不做（后续）
 
 - **顶层改转模板**（NCC）：模板一转包围盒变大，必须配合 mask，坐标和 `GetBestRotationSize` 整条链要重验，本轮不动。  
-- **尺度搜索**：已支持。`MatcherParam.minScale` / `maxScale` / `scaleStep` / `numScales` 对 `PATTERN` 和 `SHAPE` 都生效；默认 `minScale=maxScale=1` 只搜原尺度。灰度 NCC 在每个尺度上缩放模板和 mask 后走原金字塔；形状匹配缩放边缘点并在下层细化半个步长。结果 `MatchResult.Scale`。说明见 [pattern_match.md](pattern_match.md)、[shape_match.md](shape_match.md)。不依赖 TensorRT。  
 - **用 NCC 读近圆微小转角**：应用层继续定位 + 卡尺测边；转角优先用 `SHAPE` 或卡尺。
+
+尺度搜索已经落地，不在这份清单里。
 
 形状匹配已落地，见 [docs/shape_match.md](docs/shape_match.md)。
 

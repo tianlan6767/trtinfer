@@ -26,6 +26,11 @@ import cv2
 | 形状匹配 | [shape_match.md](shape_match.md) |
 | 卡尺 | [caliper.md](caliper.md) |
 | 预处理 / Blob | [blob.md](blob.md) |
+| 对齐相似度 / 平移定位 | [similarity.md](similarity.md) |
+| 分水岭 / 距离变换 / Canny | [seg.md](seg.md) |
+| ORB / SIFT | [feature.md](feature.md) |
+| 条码 / QR / OCR | [code.md](code.md) |
+| 相机标定 | [calib.md](calib.md) |
 
 ---
 
@@ -327,3 +332,79 @@ for b in cvter.find_blobs(binary, filt):
 **Blob**：`label area perimeter circularity aspect angle center left top width height`。`center` 是 `Point2d`。`area` 为像素个数，圆度用外轮廓。
 
 **ContourStats**：字段与 Blob 类似，`area` 是轮廓折线面积。见 [blob.md](blob.md)。
+
+---
+
+## 14. 对齐相似度（不是金字塔匹配）
+
+`PATTERN` 已经是金字塔 + 旋转 + 尺度的 NCC。下面这组只做同尺寸打分，或只搜平移。
+
+```python
+score = cvter.compare_similarity(roi_a, roi_b)   # 必须同尺寸
+print(score.ncc, score.zncc, score.ssim, score.histCorr)
+hit = cvter.locate_zncc(gray, templ, threshold=0.6)  # 或 locate_ncc
+print(hit.center, hit.score)
+```
+
+见 [similarity.md](similarity.md)。
+
+---
+
+## 15. 分水岭和常规边缘
+
+```python
+dist = cvter.distance_transform(binary)
+edges = cvter.canny(gray, 50, 150)
+contours = cvter.extract_contours(binary, external_only=True)
+split = cvter.split_blobs(binary, min_distance=8, dist_ratio=0.4)
+print(split.found, len(split.regions), split.labels.shape)
+```
+
+自己准备 `CV_32S` 种子时用 `cvter.watershed(image, markers)`。见 [seg.md](seg.md)。
+
+---
+
+## 16. ORB / SIFT
+
+```python
+hit = cvter.match_features(scene, model, cvter.FeatureDetector.ORB, ratio=0.75, ransac_reproj=3.0)
+print(hit.found, hit.inliers, hit.corners)   # 4x2，模板四角投到场景
+if cvter.sift_available():
+    hit = cvter.match_features(scene, model, cvter.FeatureDetector.SIFT)
+```
+
+见 [feature.md](feature.md)。
+
+---
+
+## 17. 条码、QR、OCR
+
+```python
+for h in cvter.decode_qr(bgr):
+    print(h.text, h.polygon)
+for h in cvter.decode_barcode(bgr):
+    print(h.format, h.text)
+text = cvter.recognize_text(gray, "eng")
+print(text.backend, text.text)   # 没编 Tesseract 时 backend == "none"
+```
+
+QR 用 OpenCV `QRCodeDetector`，不加载模型。一维码优先 OpenCV，解不出时用 zbar。不用微信 QR。见 [code.md](code.md)。
+
+---
+
+## 18. 相机标定
+
+默认亚像素。板型：`Chessboard`、`Charuco`、`CirclesSymmetric`、`CirclesAsymmetric`、`ArucoGrid`、`CharucoDiamond`、`AprilTag`。没有单独的不对称棋盘检测器，棋盘加标记用 `Charuco`。
+
+```python
+cfg = cvter.BoardConfig()
+cfg.type = cvter.BoardType.Chessboard
+cfg.squaresX, cfg.squaresY = 9, 6
+det = cvter.detect_board(gray, cfg)
+print(det.subpixel, det.refine, det.imagePoints.shape)
+calib = cvter.calibrate_images(views, cfg)
+und = cvter.undistort(gray, calib.cameraMatrix, calib.distCoeffs)
+cvter.save_calibration("camera.yml", calib)
+```
+
+`aruco_available()` 为 false 时，ChArUco / ArUco / 菱形 / AprilTag 检测会失败并在 `refine` 里写 `aruco-unavailable`。见 [calib.md](calib.md)。

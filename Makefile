@@ -44,7 +44,8 @@ library_paths        := $(opencv_library_path) \
 						$(python_library_path) \
 						/usr/lib/wsl/lib \
 
-link_opencv       := opencv_core opencv_imgproc opencv_videoio opencv_imgcodecs opencv_highgui
+link_opencv       := opencv_core opencv_imgproc opencv_videoio opencv_imgcodecs opencv_highgui \
+					 opencv_features2d opencv_flann opencv_calib3d opencv_objdetect opencv_dnn opencv_aruco opencv_barcode
 link_trt          := nvinfer nvinfer_plugin nvonnxparser
 link_cuda         := cuda cublas cudart cudnn
 link_sys          := stdc++ dl
@@ -88,6 +89,21 @@ else
     CXXFLAGS = -DTRT10
     cpp_srcs := $(filter-out src/common/tensorrt8.cpp, $(cpp_srcs))
     cpp_objs := $(filter-out objs/common/tensorrt8.cpp.o, $(cpp_objs))
+endif
+
+# 本机有 tesseract 时编进 OCR；没有则 recognize_text 返回 backend=none。
+TESS_CFLAGS := $(shell pkg-config --cflags tesseract 2>/dev/null)
+TESS_LIBS   := $(shell pkg-config --libs tesseract 2>/dev/null)
+ifneq ($(strip $(TESS_LIBS)),)
+CXXFLAGS   += -DCVTER_WITH_TESSERACT $(TESS_CFLAGS)
+link_flags += $(TESS_LIBS)
+endif
+
+# OpenCV barcode 在没有超分模型时经常解不出合成码。有 zbar.h 时用它做一维码后备。
+ZBAR_LIBS :=
+ifneq ($(wildcard /usr/include/zbar.h),)
+ZBAR_LIBS := -lzbar
+link_flags += $(ZBAR_LIBS)
 endif
 
 pro_cpp_objs := $(filter-out objs/interface.cpp.o, $(cpp_objs))
@@ -149,6 +165,49 @@ test-rect :
 		$$(pkg-config --cflags --libs opencv4)
 	@$(objdir)/test_rect
 
+# 传统视觉可视化：不链 TensorRT / CUDA，不弹窗，图片写到 tests/out_viz/。
+# 已有 workspace/cvter.so 时仍编这份无 GPU 模块，保证新接口在没编过完整 so 时也能测。
+viz_py_dir := $(objdir)/pytrad
+viz_so     := $(viz_py_dir)/cvter.so
+py_includes := $(shell python3-config --includes 2>/dev/null)
+pyexec := $(if $(wildcard $(python)),$(python),python3)
+viz_srcs := \
+	$(CURDIR)/tests/trad_cvter_bind.cpp \
+	$(srcdir)/bind_trad.cpp \
+	$(srcdir)/bind_extra.cpp \
+	$(srcdir)/cv_blob/blob.cpp \
+	$(srcdir)/cv_caliper/caliper.cpp \
+	$(srcdir)/cv_caliper/metrology.cpp \
+	$(srcdir)/cv_match/PatternMatching.cpp \
+	$(srcdir)/cv_match/ShapeMatching.cpp \
+	$(srcdir)/cv_match/base_matcher.cpp \
+	$(srcdir)/cv_match/matcher.cpp \
+	$(srcdir)/cv_sim/similarity.cpp \
+	$(srcdir)/cv_seg/seg.cpp \
+	$(srcdir)/cv_feature/feature.cpp \
+	$(srcdir)/cv_code/code.cpp \
+	$(srcdir)/cv_calib/calib.cpp
+
+$(viz_so): $(viz_srcs)
+	@mkdir -p $(viz_py_dir)
+	@$(cc) -std=$(stdcpp) -O2 -fPIC -shared -fopenmp -pthread \
+		-I$(srcdir) -I$(srcdir)/3rdParty/spdlog/include $(py_includes) \
+		$(if $(strip $(TESS_LIBS)),-DCVTER_WITH_TESSERACT $(TESS_CFLAGS),) \
+		$(viz_srcs) -o $@ \
+		$$(pkg-config --cflags --libs opencv4) $(TESS_LIBS) $(ZBAR_LIBS)
+
+test-viz : $(viz_so)
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_blob_viz.py -v
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_pattern_match_viz.py -v
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_shape_match_viz.py -v
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_caliper_viz.py -v
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_rect_metrology_viz.py -v
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_similarity_viz.py -v
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_seg_viz.py -v
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_feature_viz.py -v
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_code_viz.py -v
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_calib_viz.py -v
+
 test-deeplab : $(name)
 	@PYTHONPATH=$(CURDIR)/$(workdir) $(python) $(CURDIR)/tests/test_deeplabv3.py -v
 
@@ -192,4 +251,4 @@ $(objdir)/%.cu.mk : $(srcdir)/%.cu
 clean :
 	@rm -rf $(objdir) $(workdir)/$(name) $(workdir)/pro  $(workdir)/imgs
 
-.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab test-scale test-blob test-rect
+.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab test-scale test-blob test-rect test-viz

@@ -2,6 +2,8 @@
 
 灰度 NCC 用法见 [pattern_match.md](pattern_match.md)。全部 Python 示例见 [python.md](python.md)。
 
+**尺度搜索：`SHAPE` 和 `PATTERN` 都支持。** 参数就是 `MatcherParam.minScale` / `maxScale` / `scaleStep` / `numScales`，两边一样。默认 `minScale=maxScale=1` 不搜尺度。结果在 `MatchResult.Scale`。灰度 NCC 是把模板（和 mask）缩放到该尺度再走金字塔；形状匹配是缩放边缘点，下层再在半个步长里细化。
+
 类似 Halcon `create_shape_model` / `find_shape_model`：用模板**边缘处的梯度方向**建模，在搜索图上对位置和角度打分。不看填充灰度，所以整体变亮、拉丝干扰通常比 NCC 稳。
 
 ## 和灰度 NCC 的区别
@@ -74,4 +76,5 @@ hits = m.match(gray)
 make test-shape
 make test-match
 make test-scale    # 只编 cv_match，验证尺度≠1，不需要 TensorRT
+make test-viz     # tests/test_shape_match_viz.py，含两个尺度画在同一张图上
 ```

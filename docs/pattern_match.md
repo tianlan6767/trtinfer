@@ -2,6 +2,8 @@
 
 金字塔 + 旋转搜索的归一化互相关（`TM_CCOEFF_NORMED` 等价）。看整块灰度，不看轮廓。近圆目标（螺母扁位）转一点分数几乎不变，角度不可靠，那种场景用 [形状匹配](shape_match.md) 或 [卡尺](caliper.md)。
 
+**尺度搜索：`PATTERN` 和 `SHAPE` 都支持。** 用的是同一组 `MatcherParam.minScale` / `maxScale` / `scaleStep` / `numScales`。默认 `minScale=maxScale=1`，只搜原尺度，`MatchResult.Scale` 为 1。拉开上下界之后，`Scale` 是命中的采样尺度。形状匹配的尺度说明见 [shape_match.md](shape_match.md)。
+
 源码：`src/cv_match/`。测试：`make test-match`（完整 `cvter.so`）。尺度搜索还可单独跑 `make test-scale`（只链 OpenCV，不需要 TensorRT）。实现变更记录：[cv_match_update.md](cv_match_update.md)。
 
 ## Python
@@ -100,3 +102,5 @@ matcher->setTemplate(templ);           // 或 setTemplate(templ, mask)
 std::vector<template_matching::MatchResult> results;
 matcher->match(gray, results);
 ```
+
+可视化（不弹窗，图片在 `tests/out_viz/pattern/`）：`make test-viz` 里的 `tests/test_pattern_match_viz.py`。同一张搜索图上会画两个尺度。见 [tests/README.md](../tests/README.md)。
