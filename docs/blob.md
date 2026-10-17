@@ -80,4 +80,5 @@ std::vector<blob::Blob> blobs = blob::findBlobs(binary, filter);
 
 ```bash
 make test-blob
+make test-viz    # 含 tests/test_blob_viz.py，图片写到 tests/out_viz/blob/
 ```

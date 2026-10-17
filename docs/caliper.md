@@ -210,4 +210,4 @@ double d = metrology::distancePoints(a, b);
 auto summary = metrology::summarizeRectangle(tl, tr, br, bl);
 ```
 
-不依赖 TensorRT 的测试：`make test-rect`。完整模块编出来后跑 `tests/test_rect_metrology.py`。
+不依赖 TensorRT 的测试：`make test-rect`。完整模块编出来后跑 `tests/test_rect_metrology.py`。叠加图：`make test-viz`（`tests/test_caliper_viz.py`、`tests/test_rect_metrology_viz.py`），输出在 `tests/out_viz/`。

@@ -47,3 +47,4 @@ objs
 build
 llvm.sh
 tests/__pycache__/
+tests/out_viz/
