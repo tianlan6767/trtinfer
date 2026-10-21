@@ -667,6 +667,84 @@ double scorePosePacked(const ShapeEdgePt* pts, int n, const cv::Mat& packed, dou
 	return meanInFrame(sum, used, n);
 }
 
+// 同一角度的一批整数中心一起打分。每个中心仍按模型点顺序累加，过线的分数与逐个
+// scorePosePacked 相同。到不了阈值的中心这里给出完整分，调用方照旧丢掉。
+void scorePosePackedCenters(const ShapeEdgePt* pts, int n, const cv::Mat& packed, const int* xs, const int* ys,
+							int npos, bool polarity, double* scores)
+{
+	if (npos <= 0)
+		return;
+	if (n <= 0 || packed.cols < 2 || packed.rows < 2 || packed.type() != CV_32FC2 ||
+		(packed.step % sizeof(float)) != 0)
+	{
+		for (int p = 0; p < npos; ++p)
+			scores[p] = 0.0;
+		return;
+	}
+	const int w = packed.cols, h = packed.rows;
+	const float xMax = (float)(w - 1);
+	const float yMax = (float)(h - 1);
+	const float* base = packed.ptr<float>(0);
+	const size_t stride = packed.step / sizeof(float);
+	std::vector<double> sum((size_t)npos, 0.0);
+	std::vector<int> used((size_t)npos, 0);
+	for (int i = 0; i < n; ++i)
+	{
+		const double pdx = (double)pts[i].dx;
+		const double pdy = (double)pts[i].dy;
+		const float pnx = pts[i].nx;
+		const float pny = pts[i].ny;
+		int p = 0;
+		while (p < npos)
+		{
+			const int y = ys[p];
+			int q = p + 1;
+			while (q < npos && ys[q] == y)
+				++q;
+			const float py = (float)((double)y + pdy);
+			if (py < 0.f || py > yMax)
+			{
+				p = q;
+				continue;
+			}
+			const int y0 = (int)py;
+			const int y1 = y0 + 1 < h ? y0 + 1 : y0;
+			const float dy = py - (float)y0;
+			const float wy0 = 1.f - dy;
+			const float wy1 = dy;
+			const float* r0 = base + (size_t)y0 * stride;
+			const float* r1 = base + (size_t)y1 * stride;
+			for (int k = p; k < q; ++k)
+			{
+				const float px = (float)((double)xs[k] + pdx);
+				if (px < 0.f || px > xMax)
+					continue;
+				const int x0 = (int)px;
+				const int x1 = x0 + 1 < w ? x0 + 1 : x0;
+				const float dx = px - (float)x0;
+				const float w00 = (1.f - dx) * wy0;
+				const float w10 = dx * wy0;
+				const float w01 = (1.f - dx) * wy1;
+				const float w11 = dx * wy1;
+				const int i0 = x0 * 2;
+				const int i1 = x1 * 2;
+				const float inx = w00 * r0[i0] + w10 * r0[i1] + w01 * r1[i0] + w11 * r1[i1];
+				const float iny = w00 * r0[i0 + 1] + w10 * r0[i1 + 1] + w01 * r1[i0 + 1] + w11 * r1[i1 + 1];
+				double raw = (double)(pnx * inx + pny * iny);
+				if (!polarity)
+					raw = std::fabs(raw);
+				else if (raw < 0.0)
+					raw = 0.0;
+				sum[(size_t)k] += raw;
+				used[(size_t)k] += 1;
+			}
+			p = q;
+		}
+	}
+	for (int p = 0; p < npos; ++p)
+		scores[p] = meanInFrame(sum[(size_t)p], used[(size_t)p], n);
+}
+
 double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const cv::Mat& ny,
 				 const cv::Mat& mag, float minMag, double cx, double cy, bool polarity, double greediness,
 				 double minScore, bool spatialBalance, int pointStep = 1, const cv::Mat* packedXY = nullptr)
@@ -1454,6 +1532,27 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	std::vector<ShapeCandidate> coarse;
 	if (!scaleSearch_)
 	{
+		// 贴边格子与角度无关。同一角度把这些中心合在一起打，浮点分仍按模型点顺序累加。
+		std::vector<int> borderXs, borderYs, innerXs, innerYs;
+		if (quantCoarse)
+		{
+			for (int y = margin; y < pyr[top].rows - margin; y += stride)
+			{
+				for (int x = margin; x < pyr[top].cols - margin; x += stride)
+				{
+					if (onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, margin, kCoarseBorderBand))
+					{
+						borderXs.push_back(x);
+						borderYs.push_back(y);
+					}
+					else
+					{
+						innerXs.push_back(x);
+						innerYs.push_back(y);
+					}
+				}
+			}
+		}
 		// 每个角度写自己的桶，再按角度下标拼起来。critical 按线程完成顺序拼接，同分平台的种子会变。
 		std::vector<std::vector<ShapeCandidate>> buckets(angles.size());
 #pragma omp parallel for schedule(dynamic)
@@ -1463,33 +1562,64 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			const auto model = rotateModel(topModel.edges, angles[ai]);
 			// 内部每隔一个角度查响应图。角度误差最多大约一步，第一层 ±12° 接得回来。
 			// 贴边每个角度都用浮点分，T11 的 ±3 步窗口接不住被拉大的角度步长。
+			// 响应图在裁掉的轮廓旁边会把任意强边收成高分，不能拿它当贴边的入选分数。
 			const bool interiorAngle = (ai & 1) == 0;
-			const std::vector<MapPoint> mapPts =
-				(quantCoarse && interiorAngle) ? makeMapPoints(model) : std::vector<MapPoint>();
-			for (int y = margin; y < pyr[top].rows - margin; y += stride)
+			if (!quantCoarse)
 			{
-				for (int x = margin; x < pyr[top].cols - margin; x += stride)
+				for (int y = margin; y < pyr[top].rows - margin; y += stride)
 				{
-					// 贴边用浮点分。响应图在裁掉的轮廓旁边会把任意强边收成高分，
-					// 弱残件排不进前几百个峰，下一层也就看不到。
-					const bool border = quantCoarse &&
-						onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, margin, kCoarseBorderBand);
-					if (quantCoarse && !border && !interiorAngle)
-						continue;
-					const double sc = (quantCoarse && !border)
-						? scorePoseMap(mapPts, respTop, x, y, greed, abortMinScore(coarseTh, -1.0, greed))
-						: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
-									x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed), false, 1,
-									&packed[top]);
-					if (sc < coarseTh)
-						continue;
-					ShapeCandidate c;
-					c.cx = x;
-					c.cy = y;
-					c.angle = angles[ai];
-					c.score = sc;
-					c.fromBorder = border;
-					local.push_back(c);
+					for (int x = margin; x < pyr[top].cols - margin; x += stride)
+					{
+						const double sc = scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
+													 x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed),
+													 false, 1, &packed[top]);
+						if (sc < coarseTh)
+							continue;
+						ShapeCandidate c;
+						c.cx = x;
+						c.cy = y;
+						c.angle = angles[ai];
+						c.score = sc;
+						local.push_back(c);
+					}
+				}
+			}
+			else
+			{
+				if (interiorAngle)
+				{
+					const std::vector<MapPoint> mapPts = makeMapPoints(model);
+					for (int p = 0; p < (int)innerXs.size(); ++p)
+					{
+						const double sc = scorePoseMap(mapPts, respTop, innerXs[p], innerYs[p], greed,
+														abortMinScore(coarseTh, -1.0, greed));
+						if (sc < coarseTh)
+							continue;
+						ShapeCandidate c;
+						c.cx = innerXs[p];
+						c.cy = innerYs[p];
+						c.angle = angles[ai];
+						c.score = sc;
+						local.push_back(c);
+					}
+				}
+				if (!borderXs.empty())
+				{
+					std::vector<double> bsc(borderXs.size());
+					scorePosePackedCenters(model.data(), (int)model.size(), packed[top], borderXs.data(),
+										   borderYs.data(), (int)borderXs.size(), polarity, bsc.data());
+					for (int p = 0; p < (int)borderXs.size(); ++p)
+					{
+						if (bsc[(size_t)p] < coarseTh)
+							continue;
+						ShapeCandidate c;
+						c.cx = borderXs[p];
+						c.cy = borderYs[p];
+						c.angle = angles[ai];
+						c.score = bsc[(size_t)p];
+						c.fromBorder = true;
+						local.push_back(c);
+					}
 				}
 			}
 			buckets[ai].swap(local);
@@ -1504,6 +1634,27 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			scaleStride = 4;
 		if (quantCoarse)
 			scaleStride = kMapStride;
+		const int mgn = borderMargin(pyr[top].rows, pyr[top].cols, scaleStride);
+		std::vector<int> borderXs, borderYs, innerXs, innerYs;
+		if (quantCoarse)
+		{
+			for (int y = mgn; y < pyr[top].rows - mgn; y += scaleStride)
+			{
+				for (int x = mgn; x < pyr[top].cols - mgn; x += scaleStride)
+				{
+					if (onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, mgn, kCoarseBorderBand))
+					{
+						borderXs.push_back(x);
+						borderYs.push_back(y);
+					}
+					else
+					{
+						innerXs.push_back(x);
+						innerYs.push_back(y);
+					}
+				}
+			}
+		}
 		std::vector<std::pair<int, int>> jobs;
 		jobs.reserve(angles.size() * scales_.size());
 		for (int ai = 0; ai < (int)angles.size(); ++ai)
@@ -1518,32 +1669,65 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			const double objScale = scales_[jobs[ji].second];
 			const auto model = scaleEdges(rotateModel(topModel.edges, angles[ai]), objScale);
 			const bool interiorAngle = (ai & 1) == 0;
-			const std::vector<MapPoint> mapPts =
-				(quantCoarse && interiorAngle) ? makeMapPoints(model) : std::vector<MapPoint>();
-			const int mgn = borderMargin(pyr[top].rows, pyr[top].cols, scaleStride);
-			for (int y = mgn; y < pyr[top].rows - mgn; y += scaleStride)
+			if (!quantCoarse)
 			{
-				for (int x = mgn; x < pyr[top].cols - mgn; x += scaleStride)
+				for (int y = mgn; y < pyr[top].rows - mgn; y += scaleStride)
 				{
-					const bool border = quantCoarse &&
-						onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, mgn, kCoarseBorderBand);
-					if (quantCoarse && !border && !interiorAngle)
-						continue;
-					const double sc = (quantCoarse && !border)
-						? scorePoseMap(mapPts, respTop, x, y, greed, abortMinScore(coarseTh, -1.0, greed))
-						: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
-									x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed), false, 1,
-									&packed[top]);
-					if (sc < coarseTh)
-						continue;
-					ShapeCandidate c;
-					c.cx = x;
-					c.cy = y;
-					c.angle = angles[ai];
-					c.score = sc;
-					c.scale = objScale;
-					c.fromBorder = border;
-					local.push_back(c);
+					for (int x = mgn; x < pyr[top].cols - mgn; x += scaleStride)
+					{
+						const double sc = scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
+													 x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed),
+													 false, 1, &packed[top]);
+						if (sc < coarseTh)
+							continue;
+						ShapeCandidate c;
+						c.cx = x;
+						c.cy = y;
+						c.angle = angles[ai];
+						c.score = sc;
+						c.scale = objScale;
+						local.push_back(c);
+					}
+				}
+			}
+			else
+			{
+				if (interiorAngle)
+				{
+					const std::vector<MapPoint> mapPts = makeMapPoints(model);
+					for (int p = 0; p < (int)innerXs.size(); ++p)
+					{
+						const double sc = scorePoseMap(mapPts, respTop, innerXs[p], innerYs[p], greed,
+														abortMinScore(coarseTh, -1.0, greed));
+						if (sc < coarseTh)
+							continue;
+						ShapeCandidate c;
+						c.cx = innerXs[p];
+						c.cy = innerYs[p];
+						c.angle = angles[ai];
+						c.score = sc;
+						c.scale = objScale;
+						local.push_back(c);
+					}
+				}
+				if (!borderXs.empty())
+				{
+					std::vector<double> bsc(borderXs.size());
+					scorePosePackedCenters(model.data(), (int)model.size(), packed[top], borderXs.data(),
+										   borderYs.data(), (int)borderXs.size(), polarity, bsc.data());
+					for (int p = 0; p < (int)borderXs.size(); ++p)
+					{
+						if (bsc[(size_t)p] < coarseTh)
+							continue;
+						ShapeCandidate c;
+						c.cx = borderXs[p];
+						c.cy = borderYs[p];
+						c.angle = angles[ai];
+						c.score = bsc[(size_t)p];
+						c.scale = objScale;
+						c.fromBorder = true;
+						local.push_back(c);
+					}
 				}
 			}
 			buckets[ji].swap(local);
