@@ -844,6 +844,131 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCo
 		cands.push_back(a.c);
 }
 
+// 内部响应图上，弱真峰常常落在更高假峰的整幅去重半径里（大约 8～16px）。
+// 假峰到末层掉到 0.5 下面，真峰已经不在名单里。每个已留种子只捞环带里分数最高的一个，
+// 再按离种子更远优先留最多 kMaxInteriorRescue 个。贴边名单不走这里。
+constexpr double kInteriorRescueMin = 8.0;
+constexpr int kMaxInteriorRescue = 40;
+
+void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int maxCount)
+{
+	std::sort(cands.begin(), cands.end(), candidatePrecedes);
+	struct Acc
+	{
+		ShapeCandidate c;
+		double seedX = 0;
+		double seedY = 0;
+		double seedAng = 0;
+		double w = 1;
+		double angC = 0;
+		double angS = 0;
+		bool hasRing = false;
+		ShapeCandidate ring;
+		double ringDist = 0;
+	};
+	std::vector<Acc> kept;
+	kept.reserve(std::min((int)cands.size(), std::max(maxCount, 1)));
+	const double cell = std::max(minDist, 1e-6);
+	struct CellKey
+	{
+		int x;
+		int y;
+		bool operator==(const CellKey& o) const { return x == o.x && y == o.y; }
+	};
+	struct CellHash
+	{
+		size_t operator()(const CellKey& k) const
+		{
+			return (std::hash<int>{}(k.x) * 1315423911u) ^ std::hash<int>{}(k.y);
+		}
+	};
+	std::unordered_map<CellKey, std::vector<int>, CellHash> grid;
+	for (const auto& c : cands)
+	{
+		int match = -1;
+		const int ix = (int)std::floor(c.cx / cell);
+		const int iy = (int)std::floor(c.cy / cell);
+		for (int oy = -1; oy <= 1; ++oy)
+		{
+			for (int ox = -1; ox <= 1; ++ox)
+			{
+				const auto it = grid.find(CellKey{ix + ox, iy + oy});
+				if (it == grid.end())
+					continue;
+				for (int id : it->second)
+				{
+					if (std::hypot(c.cx - kept[id].seedX, c.cy - kept[id].seedY) < minDist &&
+						(match < 0 || id < match))
+						match = id;
+				}
+			}
+		}
+		if (match >= 0)
+		{
+			Acc& a = kept[match];
+			const double dist = std::hypot(c.cx - a.seedX, c.cy - a.seedY);
+			if (c.score >= a.c.score - 1e-4)
+			{
+				const double w = a.w;
+				a.c.cx = (a.c.cx * w + c.cx) / (w + 1.0);
+				a.c.cy = (a.c.cy * w + c.cy) / (w + 1.0);
+				double dAng = std::fabs(c.angle - a.seedAng);
+				if (dAng > 180.0)
+					dAng = 360.0 - dAng;
+				if (dAng <= 4.0)
+				{
+					a.angC += std::cos(c.angle * kD2R);
+					a.angS += std::sin(c.angle * kD2R);
+					a.c.angle = std::atan2(a.angS, a.angC) * kR2D;
+				}
+				a.w = w + 1.0;
+			}
+			else if (dist >= kInteriorRescueMin && c.score >= 0.42 && (!a.hasRing || dist > a.ringDist))
+			{
+				// 环带里留下离种子更远的那个。紧挨着的高分多半是同一片平台，更远的才像另一件。
+				a.ring = c;
+				a.ring.fromBorder = false;
+				a.ring.narrowRefine = true;
+				a.ringDist = dist;
+				a.hasRing = true;
+			}
+			continue;
+		}
+		if ((int)kept.size() >= maxCount)
+			continue;
+		Acc a;
+		a.c = c;
+		a.seedX = c.cx;
+		a.seedY = c.cy;
+		a.seedAng = c.angle;
+		a.w = 1;
+		a.angC = std::cos(c.angle * kD2R);
+		a.angS = std::sin(c.angle * kD2R);
+		grid[CellKey{ix, iy}].push_back((int)kept.size());
+		kept.push_back(a);
+	}
+	std::vector<Acc*> rings;
+	rings.reserve(kept.size());
+	for (auto& a : kept)
+	{
+		if (a.hasRing)
+			rings.push_back(&a);
+	}
+	std::sort(rings.begin(), rings.end(), [](const Acc* a, const Acc* b) {
+		if (a->ringDist != b->ringDist)
+			return a->ringDist > b->ringDist;
+		return candidatePrecedes(a->ring, b->ring);
+	});
+	if ((int)rings.size() > kMaxInteriorRescue)
+		rings.resize(kMaxInteriorRescue);
+	cands.clear();
+	cands.reserve(kept.size() + rings.size());
+	for (const auto& a : kept)
+		cands.push_back(a.c);
+	for (const Acc* a : rings)
+		cands.push_back(a->ring);
+}
+
 // 贴边种子和内部种子分开去重。内部响应图峰可以在下一层浮点分掉到阈值下，
 // 但不能在那之前把贴边残件从名单里抹掉。
 void nmsKeepOrigins(std::vector<ShapeCandidate>& cands, double minDist, int maxCount, bool blendInterior,
@@ -1136,9 +1261,26 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	const double minDistTop = 0.45 * std::max(4.0, topSpan);
 	if (quantCoarse)
 	{
-		// 贴边和内部都用整幅半径，和 8e6638d 一样。8px 平台去重会让贴边假峰多留到精修，
-		// 233 上 T11 会从 (25,159)@0.532 消失。内部若单独缩半径，第一层 ±10 px 的种子数会把 find 拉回数秒。
-		nmsKeepOrigins(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, true), true);
+		// 贴边去重与 743fd21 相同：整幅半径、不收质心、不捞环带。
+		// 内部在同样的整幅半径里多留环带上的第二个峰，数量封顶，避免把第一层 ±10 px 撑满。
+		std::vector<ShapeCandidate> border;
+		std::vector<ShapeCandidate> interior;
+		border.reserve(coarse.size() / 8 + 1);
+		interior.reserve(coarse.size());
+		for (const auto& c : coarse)
+		{
+			if (c.fromBorder)
+				border.push_back(c);
+			else
+				interior.push_back(c);
+		}
+		const int keep = coarseKeepCount(matchParam_.maxCount, true);
+		nmsInteriorRescue(interior, minDistTop, keep);
+		nmsCandidates(border, minDistTop, keep, false);
+		coarse.clear();
+		coarse.reserve(interior.size() + border.size());
+		coarse.insert(coarse.end(), interior.begin(), interior.end());
+		coarse.insert(coarse.end(), border.begin(), border.end());
 	}
 	else
 		nmsCandidates(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, false), false);
@@ -1163,7 +1305,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			ShapeCandidate best = c0;
 			best.cx = cx0;
 			best.cy = cy0;
-			const int rad = (quantCoarse && layer == top - 1 && !c0.fromBorder) ? 10 : 4;
+			// 贴边恒为 ±4。普通内部种子第一层 ±10。环带捞回的内部种子位置用 ±4，避免把 find 拉过 1 秒。
+			const int rad = (quantCoarse && layer == top - 1 && !c0.fromBorder && !c0.narrowRefine) ? 10 : 4;
 			std::vector<double> angs;
 			if (matchParam_.angle < 1e-6)
 				angs.push_back(0.0);
