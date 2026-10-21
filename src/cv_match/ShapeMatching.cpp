@@ -852,7 +852,7 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCo
 // 同分平台只在大约 4px 内收质心。整幅半径都收，会把两个挨着的峰收到中间，两边都对不上。
 constexpr double kInteriorRescueMin = 8.0;
 constexpr double kInteriorBlendRadius = 4.0;
-constexpr int kRingSectors = 4;
+constexpr int kRingSectors = 8;
 constexpr int kMaxInteriorRescue = 24;
 
 struct RingPick
@@ -991,8 +991,8 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 	}
 
 	// 每个像素只留排序后的第一名。cands 已按 candidatePrecedes 排过，先出现的就是该像素最高分。
-	// 每个种子的环带再切成 4 个方向、两段距离。每格留下响应图最高的和更远的那个，
-	// 后面用浮点分二选一。只留响应图最高会停在假峰尾巴上，够不着 (318,180) 这种真峰。
+	// 每个种子的环带再切成 8 个方向、两段距离。每格留下响应图最高的和更远的那个。
+	// 4 个方向时 (318,180) 落在假峰尾巴同一格里，后面无论怎么打分都看不到它。
 	struct PixKey
 	{
 		int x;
@@ -1450,16 +1450,10 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		nmsInteriorRescue(interior, minDistTop, keep, ringPicks);
 		if (!ringPicks.empty())
 		{
-			// 响应图分数在扩散之后分不出真峰和假峰尾巴。先用隔点模型把环带候选排一下，
-			// 每个种子只对第一名做完整浮点分。贴边候选不在这份名单里。
-			std::vector<ShapeEdgePt> sparseSrc;
-			sparseSrc.reserve(topModel.edges.size() / 4 + 1);
-			for (size_t ei = 0; ei < topModel.edges.size(); ei += 4)
-				sparseSrc.push_back(topModel.edges[ei]);
-			if (sparseSrc.size() < 8)
-				sparseSrc = topModel.edges;
+			// 隔点模型会把 (318,180) 排到假峰尾巴后面，完整浮点分只打了错误的那一个。
+			// 环带上每个候选都用完整模型打分，再按种子留最高的。贴边不在这份名单里。
 			std::unordered_map<long long, int> angleSlot;
-			std::vector<std::vector<ShapeEdgePt>> sparseModels;
+			std::vector<std::vector<ShapeEdgePt>> fullModels;
 			std::vector<int> pickModel(ringPicks.size(), -1);
 			for (int i = 0; i < (int)ringPicks.size(); ++i)
 			{
@@ -1467,19 +1461,19 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				auto it = angleSlot.find(key);
 				if (it == angleSlot.end())
 				{
-					const int id = (int)sparseModels.size();
-					sparseModels.push_back(rotateModel(sparseSrc, ringPicks[i].c.angle));
+					const int id = (int)fullModels.size();
+					fullModels.push_back(rotateModel(topModel.edges, ringPicks[i].c.angle));
 					it = angleSlot.emplace(key, id).first;
 				}
 				pickModel[i] = it->second;
 			}
-			std::vector<double> rankScore(ringPicks.size(), 0.0);
+			std::vector<double> floatScore(ringPicks.size(), 0.0);
 #pragma omp parallel for schedule(static)
 			for (int i = 0; i < (int)ringPicks.size(); ++i)
 			{
-				rankScore[i] = scorePose(sparseModels[pickModel[i]], nx[top], ny[top], mag[top],
-										 (float)matchParam_.edgeMinMag, ringPicks[i].c.cx, ringPicks[i].c.cy,
-										 polarity, greed, coarseTh, false);
+				floatScore[i] = scorePose(fullModels[pickModel[i]], nx[top], ny[top], mag[top],
+										  (float)matchParam_.edgeMinMag, ringPicks[i].c.cx, ringPicks[i].c.cy,
+										  polarity, greed, coarseTh, false);
 			}
 			int maxSeed = 0;
 			for (const auto& p : ringPicks)
@@ -1487,34 +1481,12 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			std::vector<int> best(maxSeed + 1, -1);
 			for (int i = 0; i < (int)ringPicks.size(); ++i)
 			{
-				if (rankScore[i] < coarseTh * 0.75)
+				if (floatScore[i] < coarseTh)
 					continue;
 				const int s = ringPicks[i].seed;
-				if (best[s] < 0 || rankScore[i] > rankScore[best[s]] ||
-					(rankScore[i] == rankScore[best[s]] && candidatePrecedes(ringPicks[i].c, ringPicks[best[s]].c)))
+				if (best[s] < 0 || floatScore[i] > floatScore[best[s]] ||
+					(floatScore[i] == floatScore[best[s]] && candidatePrecedes(ringPicks[i].c, ringPicks[best[s]].c)))
 					best[s] = i;
-			}
-			std::vector<int> winners;
-			winners.reserve(best.size());
-			for (int b : best)
-			{
-				if (b >= 0)
-					winners.push_back(b);
-			}
-			std::vector<double> floatScore(ringPicks.size(), 0.0);
-#pragma omp parallel for schedule(static)
-			for (int wi = 0; wi < (int)winners.size(); ++wi)
-			{
-				const int i = winners[wi];
-				const auto model = rotateModel(topModel.edges, ringPicks[i].c.angle);
-				floatScore[i] = scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
-										  ringPicks[i].c.cx, ringPicks[i].c.cy, polarity, greed, coarseTh, false);
-			}
-			for (int s = 0; s < (int)best.size(); ++s)
-			{
-				const int i = best[s];
-				if (i >= 0 && floatScore[i] < coarseTh)
-					best[s] = -1;
 			}
 			std::vector<ShapeCandidate> rings;
 			rings.reserve(best.size());
