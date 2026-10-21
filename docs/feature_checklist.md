@@ -14,7 +14,7 @@
 
 | 能力 | 范围 | 文档 |
 |---|---|---|
-| 深度学习 TensorRT | YOLO 检测 / 姿态 / 实例分割 / OBB / SAHI、分类、UVIAD、DeepLabV3+；C++ 侧还有 `DFINE` / `DFINESAHI`。走完整 `cvter`，需要 CUDA / TensorRT | [yolo.md](yolo.md)、[classify.md](classify.md)、[uviad.md](uviad.md)、[deeplabv3.md](deeplabv3.md)、[python.md](python.md) |
+| 深度学习 TensorRT | YOLO 检测 / 姿态 / 实例分割 / OBB / SAHI、DFINE / DFINESAHI、分类、UVIAD、DeepLabV3+。Python `ModelType` 已导出上述类型。走完整 `cvter`，需要 CUDA / TensorRT | [yolo.md](yolo.md)、[dfine.md](dfine.md)、[classify.md](classify.md)、[uviad.md](uviad.md)、[deeplabv3.md](deeplabv3.md)、[python.md](python.md) |
 | 灰度模板匹配 | `MatcherType.PATTERN`（NCC），可选 `setTemplate(templ, mask)`。尺度搜索：`minScale` / `maxScale` / `scaleStep` / `numScales` | [pattern_match.md](pattern_match.md) |
 | 形状匹配 | `MatcherType.SHAPE`，mask 内才提边缘。尺度参数与 PATTERN 同一组 | [shape_match.md](shape_match.md) |
 | 预处理与 Blob | 阈值、形态学、连通域 / 轮廓 | [blob.md](blob.md) |
@@ -58,7 +58,6 @@
 
 | 能力 | 现状 |
 |---|---|
-| DFINE 的 Python 绑定与导出打磨 | C++ `load()` 已有 `DFINE` / `DFINESAHI`，Python 侧尚未导出 |
 | 相机 SDK 采图，以及产线标定 / 手眼集成层 | 标定、去畸变、手眼算法已有；相机 SDK 和接到设备上的集成层还没有 |
 | HMI / 上层集成 | 还没有界面和上层对接层 |
 

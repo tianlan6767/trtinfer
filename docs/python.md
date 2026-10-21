@@ -20,6 +20,7 @@ import cv2
 |---|---|
 | 功能清单（已实现 / 依赖可选 / 未实现） | [feature_checklist.md](feature_checklist.md) |
 | YOLO 检测 / 姿态 / 实例分割 / OBB / SAHI | [yolo.md](yolo.md) |
+| DFINE 检测 / SAHI | [dfine.md](dfine.md) |
 | 分类 | [classify.md](classify.md) |
 | 异常分割 UVIAD | [uviad.md](uviad.md) |
 | DeepLabV3+ | [deeplabv3.md](deeplabv3.md) |
@@ -65,6 +66,7 @@ batch = model.forwards([img])   # list[list[DetResult]]，外层=图，内层=�
 | ModelType | 读哪个字段 |
 |---|---|
 | `YOLOV5` / `YOLO11` 及对应 `*SAHI` | `h.box` |
+| `DFINE` / `DFINESAHI` | `h.box` |
 | `YOLO11POSE` / `YOLO11POSESAHI` | `h.box` + `h.keypoints` |
 | `YOLO11SEG` / `YOLO11SEGSAHI` | `h.box` + `h.seg`（相对框的 mask） |
 | `YOLO11OBB` / `YOLO11OBBSAHI` | `h.obb` |
@@ -73,8 +75,6 @@ batch = model.forwards([img])   # list[list[DetResult]]，外层=图，内层=�
 | `DEEPLABV3` / `DEEPLABV3SAHI` | 见 [deeplabv3.md](deeplabv3.md) |
 
 `DetResult` 始终有 `box / keypoints / seg / obb / cls`，未用到的字段为空或默认值。
-
-`DFINE` / `DFINESAHI` 只在 C++ `load()` 里，**没有**绑到 Python。
 
 ---
 
@@ -213,7 +213,42 @@ cls = model.forwards([img])[0][0].seg   # (H, W) uint8
 
 ---
 
-## 9. 灰度模板匹配
+## 9. DFINE 检测（整图 / SAHI）
+
+结果与 YOLO 检测相同，读 `h.box`。`names` 要盖住模型会输出的 `class_id`。整图可一次多张，张数不要超过 `max_batch_size`。切片一次一张图。
+
+```python
+names = ["person", "bicycle", "car"]  # COCO 引擎请传满 80 类，见 dfine.md
+model = cvter.TrtInfer(
+    "dfine_l_obj2coco.engine",
+    cvter.ModelType.DFINE,
+    names,
+    0, 0.5, 0.45, 16,
+    False, 0, 0, 0.0, 0.0,
+)
+img = cv2.imread("persons.jpg")
+for h in model.forwards([img])[0]:
+    b = h.box
+    print(b.class_name, b.score, b.left, b.top, b.right, b.bottom)
+```
+
+大图切片（`max_batch_size` 必须 ≥ 切片数）：
+
+```python
+model = cvter.TrtInfer(
+    "dfine_l_obj2coco.engine",
+    cvter.ModelType.DFINESAHI,
+    names,
+    0, 0.5, 0.45, 16,
+    False, 1280, 1280, 0.2, 0.2,
+)
+```
+
+完整说明：[dfine.md](dfine.md)。
+
+---
+
+## 10. 灰度模板匹配
 
 ```python
 param = cvter.MatcherParam()
@@ -241,7 +276,7 @@ for r in m.match(gray):
 
 ---
 
-## 10. 形状匹配
+## 11. 形状匹配
 
 ```python
 param = cvter.MatcherParam()
@@ -264,7 +299,7 @@ hits = m.match(gray)
 
 ---
 
-## 11. 卡尺（直线 / 斜边 / 圆）
+## 12. 卡尺（直线 / 斜边 / 圆）
 
 ```python
 param = cvter.CaliperParam()
@@ -292,7 +327,7 @@ print(cvter.distance_points(0, 0, 3, 4), cvter.angle_lines(0, 0, 10, 0, 0, 0, 0,
 
 ---
 
-## 12. 预处理与 Blob
+## 13. 预处理与 Blob
 
 不需要 TensorRT。非 0 为前景，Blob 坐标在原图上。
 
@@ -316,7 +351,7 @@ for b in cvter.find_blobs(binary, filt):
 
 ---
 
-## 13. 结果类型
+## 14. 结果类型
 
 **Box**：`left top right bottom score class_id class_name`
 
@@ -339,7 +374,7 @@ for b in cvter.find_blobs(binary, filt):
 
 ---
 
-## 14. 对齐相似度（不是金字塔匹配）
+## 15. 对齐相似度（不是金字塔匹配）
 
 `PATTERN` 已经是金字塔 + 旋转 + 尺度的 NCC。下面这组只做同尺寸打分，或只搜平移。
 
@@ -354,7 +389,7 @@ print(hit.center, hit.score)
 
 ---
 
-## 15. 金样比对
+## 16. 金样比对
 
 平移定位只回答「模板在哪」。这里在对齐之后做绝对差分，再阈值、形态学、Blob，把多出来或少掉的区域收成缺陷。
 
@@ -375,7 +410,7 @@ for d in hit.defects:
 
 ---
 
-## 16. 分水岭和常规边缘
+## 17. 分水岭和常规边缘
 
 ```python
 dist = cvter.distance_transform(binary)
@@ -389,7 +424,7 @@ print(split.found, len(split.regions), split.labels.shape)
 
 ---
 
-## 17. ORB / SIFT
+## 18. ORB / SIFT
 
 ```python
 hit = cvter.match_features(scene, model, cvter.FeatureDetector.ORB, ratio=0.75, ransac_reproj=3.0)
@@ -409,7 +444,7 @@ loc = cvter.match_coarse_to_fine(scene, model, param=param)
 
 ---
 
-## 18. 条码、QR、OCR
+## 19. 条码、QR、OCR
 
 ```python
 for h in cvter.decode_qr(bgr):
@@ -424,7 +459,7 @@ QR 用 OpenCV `QRCodeDetector`，不加载模型。一维码优先 OpenCV，解�
 
 ---
 
-## 19. 相机标定
+## 20. 相机标定
 
 默认亚像素。板型：`Chessboard`、`Charuco`、`CirclesSymmetric`、`CirclesAsymmetric`、`ArucoGrid`、`CharucoDiamond`、`AprilTag`。没有单独的不对称棋盘检测器，棋盘加标记用 `Charuco`。
 

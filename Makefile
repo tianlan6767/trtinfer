@@ -249,6 +249,9 @@ test-viz : $(viz_so)
 test-deeplab : $(name)
 	@PYTHONPATH=$(CURDIR)/$(workdir) $(python) $(CURDIR)/tests/test_deeplabv3.py -v
 
+test-dfine : $(name)
+	@PYTHONPATH=$(CURDIR)/$(workdir) $(python) $(CURDIR)/tests/test_dfine.py -v
+
 pro       : $(workdir)/pro
 
 runpro    : pro
@@ -289,4 +292,4 @@ $(objdir)/%.cu.mk : $(srcdir)/%.cu
 clean :
 	@rm -rf $(objdir) $(workdir)/$(name) $(workdir)/pro  $(workdir)/imgs
 
-.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab test-scale test-blob test-rect test-golden test-measure test-viz
+.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab test-dfine test-scale test-blob test-rect test-golden test-measure test-viz

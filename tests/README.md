@@ -13,6 +13,7 @@ make test-scale
 make test-match
 make test-shape
 make test-golden
+make test-dfine    # 需要完整 cvter.so；没有 DFINE engine 时推理用例跳过
 ```
 
 ## 可视化
@@ -41,6 +42,6 @@ make test-viz
 | `test_code_viz.py` | QR、EAN-13、OCR |
 | `test_calib_viz.py` | 七种板、亚像素、多视标定、去畸变、YAML、手眼 |
 
-螺母样图不在仓库里时，对应用例跳过。掩膜匹配的图在 `tests/test_mask_match_viz.py` 里现场生成，不依赖螺母样图，输出在 `tests/out_viz/mask/`。OpenCV 没编 aruco 时跳过 ChArUco / ArUco / 菱形 / AprilTag。没有 SIFT 时跳过 SIFT。没有 Tesseract 时 OCR 用例跳过。一维码在 OpenCV 解不出时走 zbar。金样比对的夹具在 `tests/synth.py` 里现场生成，不依赖螺母图。粗到精用的也是合成图。`tests/bench_aoi_coarse_refine.py` 只有在设置了 `CVTER_AOI_SCENE` 和 `CVTER_AOI_TEMPL`（或传入 `--scene` / `--templ`）时才读大图，否则直接跳过。
+螺母样图不在仓库里时，对应用例跳过。掩膜匹配的图在 `tests/test_mask_match_viz.py` 里现场生成，不依赖螺母样图，输出在 `tests/out_viz/mask/`。OpenCV 没编 aruco 时跳过 ChArUco / ArUco / 菱形 / AprilTag。没有 SIFT 时跳过 SIFT。没有 Tesseract 时 OCR 用例跳过。一维码在 OpenCV 解不出时走 zbar。金样比对的夹具在 `tests/synth.py` 里现场生成，不依赖螺母图。粗到精用的也是合成图。`tests/bench_aoi_coarse_refine.py` 只有在设置了 `CVTER_AOI_SCENE` 和 `CVTER_AOI_TEMPL`（或传入 `--scene` / `--templ`）时才读大图，否则直接跳过。`tests/test_dfine.py` 在 `cvter.so` 可导入时总会检查 `ModelType.DFINE` / `DFINESAHI`。推理用例在没有引擎时跳过：设置 `CVTER_DFINE_ENGINE`，或把文件放在 `models/engine/dfine_l_obj2coco.engine`（仓库根或 `workspace/` 下同样认）。可选 `CVTER_DFINE_IMAGE`，以及逗号分隔的 `CVTER_DFINE_NAMES`。
 
 Windows 不走这份 Makefile。按 [docs/env_windows.md](../docs/env_windows.md) 用 CMake 时，把 `src/cv_golden/golden.cpp` 和 Makefile 变量 `viz_srcs` 里的其它传统算法源一起编成名为 `cvter` 的 pybind 模块（对应 Linux 的 `objs/pytrad/cvter.so`），再跑 `tests/test_golden_viz.py`。只验算法、不画图时，用与 `make test-golden` 相同的源文件编 `tests/test_golden.cpp`。

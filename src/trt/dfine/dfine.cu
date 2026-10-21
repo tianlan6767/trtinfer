@@ -100,7 +100,7 @@ InferResult DFineModelImpl::forwards(const std::vector<cv::Mat> &inputs, void *s
                                  cudaMemcpyHostToDevice,
                                  stream_));
 
-    #ifdef NV_TENSORRT_MAJOR >= 10
+    #if NV_TENSORRT_MAJOR >= 10
         std::unordered_map<std::string, const void *> bindings = {
             {"images", input_buffer_image_.gpu()},
             {"orig_target_sizes", input_buffer_orig_target_size_.gpu()},

@@ -25,6 +25,7 @@ Python 全部用法（可拷贝）：[docs/python.md](docs/python.md)
 | 环境配置（Linux / WSL） | [docs/env.md](docs/env.md) |
 | 环境配置（Windows + VS2019） | [docs/env_windows.md](docs/env_windows.md) |
 | YOLO 检测 / 姿态 / 实例分割 / OBB / SAHI | [docs/yolo.md](docs/yolo.md) |
+| DFINE 检测 / SAHI | [docs/dfine.md](docs/dfine.md) |
 | 图像分类 | [docs/classify.md](docs/classify.md) |
 | 异常分割 UVIAD | [docs/uviad.md](docs/uviad.md) |
 | DeepLabV3+ 语义分割 | [docs/deeplabv3.md](docs/deeplabv3.md) |
@@ -38,7 +39,7 @@ Python 全部用法（可拷贝）：[docs/python.md](docs/python.md)
 
 ```bash
 make -j
-make test-caliper test-match test-shape test-deeplab
+make test-caliper test-match test-shape test-deeplab test-dfine
 make test-blob test-rect test-scale test-golden   # 只编经典视觉，不需要 TensorRT
 make test-viz                      # 传统算法可视化，不弹窗，图片在 tests/out_viz/
 # 推理脚本：cd workspace && /usr/local/bin/python3.12 test.py
@@ -198,7 +199,7 @@ pybind11-stubgen cvter -o ./
 
 完整可拷贝示例见 [docs/python.md](docs/python.md)。下面是各模块最短写法。
 
-**检测 / SAHI / 姿态 / 分割 / OBB / 分类 / 异常 / DeepLab**
+**检测 / DFINE / SAHI / 姿态 / 分割 / OBB / 分类 / 异常 / DeepLab**
 
 ```python
 import cvter
@@ -207,10 +208,11 @@ import cv2
 img = cv2.imread("test.jpg")
 names = ["person"]
 
-# 检测（YOLOv5 把类型换成 YOLOV5）
+# 检测（YOLOv5 把类型换成 YOLOV5；DFINE 换成 DFINE，结果同样读 h.box）
 det = cvter.TrtInfer("yolo11s.engine", cvter.ModelType.YOLO11, names, 0, 0.3, 0.45, 8, False, 0, 0, 0.0, 0.0)
 for h in det.forwards([img])[0]:
     print(h.box.class_name, h.box.score, h.box.left, h.box.top, h.box.right, h.box.bottom)
+dfine = cvter.TrtInfer("dfine.engine", cvter.ModelType.DFINE, names, 0, 0.5, 0.45, 8, False, 0, 0, 0.0, 0.0)
 
 # 大图切片
 sahi = cvter.TrtInfer("yolo11s.engine", cvter.ModelType.YOLO11SAHI, names, 0, 0.3, 0.45, 18, False, 1280, 1280, 0.2, 0.2)
