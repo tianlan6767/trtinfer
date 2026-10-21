@@ -693,7 +693,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			continue;
 		packed.push_back(packResult(c.cx * pyrScale, c.cy * pyrScale, c.angle, c.score, templW_, templH_, c.scale));
 	}
-	BaseMatcher::suppressMatchOverlap(packed, matchParam_.iouThreshold, matchParam_.maxCount);
+	BaseMatcher::suppressMatchOverlap(packed, matchParam_.iouThreshold, matchParam_.maxCount, true);
 	matchResults.swap(packed);
 	return (int)matchResults.size();
 }

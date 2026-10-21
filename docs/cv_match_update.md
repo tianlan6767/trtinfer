@@ -151,3 +151,15 @@ matcher.setTemplate(templ, mask)
 - SHAPE 在最细一层对「至少三个象限都有边缘点」的闭合轮廓做象限覆盖打折。半圈弧不再靠平均分过线。开口轮廓（L 形）不打折。
 
 `make test-scale` 不需要 TensorRT。Windows 上按 [env_windows.md](env_windows.md) 用 CMake 重编 `cvter` 后，再跑原来的 Halcon 对照脚本。没有单独的图像路径要配：官方例图不在 CI 里。
+
+## 9. PATTERN 圆环过检，以及被大框边距吞掉的邻点（2026-10-21）
+
+第 8 节之后，Windows 上用同一套官方例图再对过：SHAPE 的 `rings_03` 5→1、`rings_04` 9→3 与 Halcon 一致，`rings_02` 10→3（Halcon 4）。PATTERN 的圆环仍是 5/4/6（Halcon 4/1/3），`green_dots` 的 PATTERN 仍是 2/3，SHAPE 是 4（Halcon 3）。
+
+合成图上对得上的原因：
+
+- 远处的椭圆弧，全局 NCC 大约 0.51–0.59，能过 0.5，但把命中框拧回模板后，大约一半象限几乎不相关（整圈则四个象限都在 0.8 以上）。不抬全局阈值，否则 0.6 这一档的弱目标和已经对齐的 NCC 会一起受影响。
+- 模板大部分是空白边、对比只在中心时，旁边较小的实例中心已经分开，但它的框有一半以上落在大框里。旧逻辑只要覆盖比例超过 `iouThreshold` 就把低分的那个删掉，较小的真目标会消失。同尺寸、中心靠近的重叠（圆环的重复锁）仍合并。中心距门槛保持 0.4 倍较小边，避免把已经分开的同尺度圆环再并掉。
+- SHAPE 只额外去掉「尺度比 > 1.08、中心仍落在 0.5 倍较小边内、分数低于更强命中的 0.72 倍」的旁瓣。同尺度不走这条。
+
+`tests/test_scale_match.cpp` 增加 `testPatternRingArcRejected`、`testPatternKeepsNeighborInMargin`、`testPatternOneQuadrantOcclusion`，四个整圈在 ±20° 下仍是 4。`make test-scale` 仍不需要 TensorRT。Windows 上再按 [env_windows.md](env_windows.md) 用 CMake 重编后，跑原来的 Halcon 对照；官方图仍不进仓库。
