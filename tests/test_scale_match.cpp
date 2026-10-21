@@ -2,6 +2,8 @@
 #include "cv_match/matcher.h"
 #include "cv_match/base_matcher.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <string>
@@ -1438,6 +1440,63 @@ void testShapeFaintRingThird()
 	expect(dim && dim->Score >= 0.5, "shape faint-ring dim score passes 0.5");
 }
 
+// ±180°、oriBins=16：粗搜走方向响应图，正放和转过约 25° 的 L 都要留下。
+// 末层仍是浮点分。不在这里跑 oriBins=0 的 ±180（那条路径没有响应图）。
+void testShapeOri16ResponseMapWideAngle()
+{
+	using namespace template_matching;
+	cv::Mat patch = lShape();
+	cv::Mat padded(patch.rows + 40, patch.cols + 40, CV_8U, cv::Scalar(30));
+	paste(padded, patch, 20, 20);
+	cv::Mat rot;
+	const cv::Point2f pivot((padded.cols - 1) * 0.5f, (padded.rows - 1) * 0.5f);
+	const cv::Mat M = cv::getRotationMatrix2D(pivot, 25.0, 1.0);
+	cv::warpAffine(padded, rot, M, padded.size(), cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(30));
+
+	cv::Mat scene(460, 640, CV_8U, cv::Scalar(30));
+	const cv::Point uprightAt(36, 48);
+	const cv::Point turnedAt(360, 210);
+	paste(scene, padded, uprightAt.x, uprightAt.y);
+	paste(scene, rot, turnedAt.x, turnedAt.y);
+	const cv::Point2d uprightC(uprightAt.x + (padded.cols - 1) / 2.0, uprightAt.y + (padded.rows - 1) / 2.0);
+	const cv::Point2d turnedC(turnedAt.x + (padded.cols - 1) / 2.0, turnedAt.y + (padded.rows - 1) / 2.0);
+
+	MatcherParam param;
+	param.matcherType = MatcherType::SHAPE;
+	param.angle = 180;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 4;
+	param.iouThreshold = 0.4;
+	param.minArea = 256;
+	param.edgeMinMag = 12;
+	param.maxEdgePoints = 280;
+	param.usePolarity = true;
+	param.greediness = 0.9;
+	param.oriBins = 16;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(padded) == 0, "shape ori16-map setTemplate");
+	std::vector<MatchResult> hits;
+	const auto t0 = std::chrono::steady_clock::now();
+	matcher->match(scene, hits);
+	const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+	std::cout << "    shape ori16-map ±180 find " << ms << " ms n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " ang=" << h.Angle << " c=(" << h.Center.x << "," << h.Center.y << ")"
+				  << std::endl;
+	expect(countNear(hits, uprightC, 8.0) == 1, "shape ori16-map finds the upright L");
+	expect(countNear(hits, turnedC, 10.0) == 1, "shape ori16-map finds the rotated L");
+	const MatchResult* upright = nearestHit(hits, uprightC);
+	const MatchResult* turned = nearestHit(hits, turnedC);
+	expect(upright && upright->Score >= 0.55, "shape ori16-map upright score");
+	expect(turned && turned->Score >= 0.45, "shape ori16-map rotated score");
+	expect(upright && std::fabs(upright->Angle) <= 8.0, "shape ori16-map upright angle");
+	if (turned)
+	{
+		const double d25 = std::min(std::fabs(turned->Angle - 25.0), std::fabs(turned->Angle + 25.0));
+		expect(d25 <= 8.0, "shape ori16-map rotated angle near ±25");
+	}
+}
+
 void testPatternBrightnessLikeExposure()
 {
 	using namespace template_matching;
@@ -1492,6 +1551,7 @@ int main()
 	testShapeHighContrastStillFinds();
 	testShapeBorderPartial();
 	testShapeOri16PartialMatchesFloat();
+	testShapeOri16ResponseMapWideAngle();
 	testShapeFaintRingThird();
 	testPatternOneQuadrantOcclusion();
 	testBoardPoseUnchanged();

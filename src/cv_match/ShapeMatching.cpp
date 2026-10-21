@@ -165,7 +165,7 @@ inline float sample32(const cv::Mat& m, float x, float y)
 		   (1.f - dx) * dy * v01 + dx * dy * v11;
 }
 
-// 梯度方向收成 16 档（每档 22.5°）。粗搜用余弦表，不把整段 LineMod 响应图搬进来。
+// 梯度方向收成 16 档（每档 22.5°）。粗搜把每档的邻域最大余弦铺成响应图，位姿循环只查表。
 int oriBin16(float nx, float ny)
 {
 	if (nx * nx + ny * ny < 1e-8f)
@@ -228,6 +228,78 @@ void buildOri16(const cv::Mat& nx, const cv::Mat& ny, const cv::Mat& mag, float 
 			po[x] = b < 0 ? (uchar)255 : (uchar)b;
 		}
 	}
+}
+
+// 16 张响应图。R_b(x,y) 是 b 档与场景方向在 ±spread 里的最大余弦（极性由建图时选定）。
+// 扩散只做一次：粗搜每个位姿、每个模型点变成一次查表。
+// 顶层 A 个角度、P 个位置、N 个点、邻域边长 T=2*spread+1 时，
+// 原来是 O(A·P·N·T²)，现在是 O(16·W·H·T² + A·P·N)。T=5 时位姿内层大约少 25 倍，
+// 也不再每个位姿分配方向标签。末层精修仍用浮点 scorePose。oriBins!=16 不建这些图。
+struct OriResponse16
+{
+	int width = 0;
+	int height = 0;
+	int spread = 0;
+	std::vector<float> data;
+};
+
+struct MapPoint
+{
+	float dx = 0.f;
+	float dy = 0.f;
+	int bin = -1;
+};
+
+void buildOriResponse16(const cv::Mat& nx, const cv::Mat& ny, const cv::Mat& mag, float floorMag,
+						bool polarity, int spread, OriResponse16& out)
+{
+	cv::Mat ori;
+	buildOri16(nx, ny, mag, floorMag, ori);
+	const int w = ori.cols;
+	const int h = ori.rows;
+	out.width = w;
+	out.height = h;
+	out.spread = std::max(0, spread);
+	out.data.assign((size_t)16 * (size_t)w * (size_t)h, 0.f);
+	if (w <= 0 || h <= 0)
+		return;
+	const OriCos16& table = oriCos16();
+	cv::Mat raw(h, w, CV_32F);
+	cv::Mat kernel;
+	if (out.spread > 0)
+		kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2 * out.spread + 1, 2 * out.spread + 1));
+	for (int b = 0; b < 16; ++b)
+	{
+		const float* cosRow = polarity ? table.pol[b] : table.any[b];
+		for (int y = 0; y < h; ++y)
+		{
+			const uchar* po = ori.ptr<uchar>(y);
+			float* dst = raw.ptr<float>(y);
+			for (int x = 0; x < w; ++x)
+			{
+				const int sl = po[x];
+				dst[x] = sl <= 15 ? cosRow[sl] : 0.f;
+			}
+		}
+		float* plane = out.data.data() + (size_t)b * (size_t)w * (size_t)h;
+		cv::Mat spreaded(h, w, CV_32F, plane);
+		if (out.spread > 0)
+			cv::dilate(raw, spreaded, kernel, cv::Point(-1, -1), 1, cv::BORDER_CONSTANT, cv::Scalar(0));
+		else
+			raw.copyTo(spreaded);
+	}
+}
+
+std::vector<MapPoint> makeMapPoints(const std::vector<ShapeEdgePt>& model)
+{
+	std::vector<MapPoint> pts(model.size());
+	for (size_t i = 0; i < model.size(); ++i)
+	{
+		pts[i].dx = model[i].dx;
+		pts[i].dy = model[i].dy;
+		pts[i].bin = oriBin16(model[i].nx, model[i].ny);
+	}
+	return pts;
 }
 
 struct EdgeCand
@@ -529,55 +601,32 @@ double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const
 	return mean;
 }
 
-// 顶层粗搜：每个模型点在 ±spread 里取方向余弦的最大值，等价于响应图上的一次查表。
-// 极性打开时反方向记 0；关掉时用绝对值。末层精修不走这里。
-double scorePoseQuant(const std::vector<ShapeEdgePt>& model, const cv::Mat& ori, double cx, double cy,
-					  bool polarity, double greediness, double minScore, int spread)
+// 顶层粗搜：响应图已经含 ±spread 的最大值。点本身在画布外就跳过。
+// 极性在建图时写进余弦。末层精修不走这里。
+double scorePoseMap(const std::vector<MapPoint>& model, const OriResponse16& resp, double cx, double cy,
+					double greediness, double minScore)
 {
 	const int n = (int)model.size();
-	if (n <= 0 || ori.empty())
+	if (n <= 0 || resp.width <= 0 || resp.height <= 0 || resp.data.empty())
 		return 0.0;
-	const OriCos16& table = oriCos16();
-	std::vector<int> label(n);
-	for (int i = 0; i < n; ++i)
-		label[i] = oriBin16(model[i].nx, model[i].ny);
+	const int w = resp.width;
+	const int h = resp.height;
+	const size_t planeStride = (size_t)w * (size_t)h;
+	const float* base = resp.data.data();
 	double sum = 0.0;
 	int used = 0;
 	const double abortBelow = minScore * std::max(0.0, std::min(1.0, greediness));
-	const int sp = std::max(0, spread);
-	const int w = ori.cols;
-	const int h = ori.rows;
 	for (int i = 0; i < n; ++i)
 	{
-		const int px = (int)std::lround(cx + model[i].dx);
-		const int py = (int)std::lround(cy + model[i].dy);
-		// 点本身在画布外就跳过，不用邻域往画面里捞一条边来凑分。
-		if (px < 0 || py < 0 || px >= w || py >= h)
+		const int px = (int)std::lround(cx + (double)model[i].dx);
+		const int py = (int)std::lround(cy + (double)model[i].dy);
+		// 点本身在画布外就跳过，不用邻域往画面里捞一条边来凑分。邻域最大已在响应图里。
+		if ((unsigned)px >= (unsigned)w || (unsigned)py >= (unsigned)h)
 			continue;
 		float best = 0.f;
-		const int ml = label[i];
-		if (ml >= 0)
-		{
-			for (int oy = -sp; oy <= sp; ++oy)
-			{
-				const int y = py + oy;
-				if ((unsigned)y >= (unsigned)h)
-					continue;
-				const uchar* row = ori.ptr<uchar>(y);
-				for (int ox = -sp; ox <= sp; ++ox)
-				{
-					const int x = px + ox;
-					if ((unsigned)x >= (unsigned)w)
-						continue;
-					const int sl = row[x];
-					if (sl > 15)
-						continue;
-					const float s = polarity ? table.pol[ml][sl] : table.any[ml][sl];
-					if (s > best)
-						best = s;
-				}
-			}
-		}
+		const int ml = model[i].bin;
+		if ((unsigned)ml < 16u)
+			best = base[(size_t)ml * planeStride + (size_t)py * (size_t)w + (size_t)px];
 		sum += (double)best;
 		++used;
 		if (poseHopeless(sum, used, n, i, abortBelow))
@@ -750,9 +799,11 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	for (int i = 0; i < (int)pyr.size(); ++i)
 		computeUnitGrad(pyr[i], nx[i], ny[i], mag[i]);
 	const bool quantCoarse = matchParam_.oriBins == 16;
-	cv::Mat oriTop;
+	const bool polarity = matchParam_.usePolarity;
+	// ±2 与原先 scorePoseQuant 的邻域一致，扩散进响应图，不放进位姿循环。
+	OriResponse16 respTop;
 	if (quantCoarse)
-		buildOri16(nx[top], ny[top], mag[top], 6.f, oriTop);
+		buildOriResponse16(nx[top], ny[top], mag[top], 6.f, polarity, 2, respTop);
 
 	const ShapeLayer& topModel = layers_[top];
 	double angStep = angleStepDeg(topModel.edges);
@@ -777,12 +828,11 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	int stride = std::max(1, std::min(tw, th) / 8);
 	if (stride > 4)
 		stride = 4;
-	// 16 档粗搜的邻域是 ±2。步长收到 2，精修 ±4 才盖得住斜向漏格。
+	// ±2 已在响应图里。步长仍收到 2，精修 ±4 才盖得住斜向漏格。
 	if (quantCoarse && stride > 2)
 		stride = 2;
 	const int margin = borderMargin(pyr[top].rows, pyr[top].cols, stride);
 	const double coarseTh = matchParam_.scoreThreshold * 0.72;
-	const bool polarity = matchParam_.usePolarity;
 	const double greed = matchParam_.greediness;
 
 	std::vector<ShapeCandidate> coarse;
@@ -795,12 +845,13 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			for (int ai = 0; ai < (int)angles.size(); ++ai)
 			{
 				const auto model = rotateModel(topModel.edges, angles[ai]);
+				const std::vector<MapPoint> mapPts = quantCoarse ? makeMapPoints(model) : std::vector<MapPoint>();
 				for (int y = margin; y < pyr[top].rows - margin; y += stride)
 				{
 					for (int x = margin; x < pyr[top].cols - margin; x += stride)
 					{
 						const double sc = quantCoarse
-							? scorePoseQuant(model, oriTop, x, y, polarity, greed, coarseTh, 2)
+							? scorePoseMap(mapPts, respTop, x, y, greed, coarseTh)
 							: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag, x, y, polarity, greed, coarseTh, false);
 						if (sc < coarseTh)
 							continue;
@@ -840,13 +891,14 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				const int ai = jobs[ji].first;
 				const double objScale = scales_[jobs[ji].second];
 				const auto model = scaleEdges(rotateModel(topModel.edges, angles[ai]), objScale);
+				const std::vector<MapPoint> mapPts = quantCoarse ? makeMapPoints(model) : std::vector<MapPoint>();
 				const int mgn = borderMargin(pyr[top].rows, pyr[top].cols, scaleStride);
 				for (int y = mgn; y < pyr[top].rows - mgn; y += scaleStride)
 				{
 					for (int x = mgn; x < pyr[top].cols - mgn; x += scaleStride)
 					{
 						const double sc = quantCoarse
-							? scorePoseQuant(model, oriTop, x, y, polarity, greed, coarseTh, 2)
+							? scorePoseMap(mapPts, respTop, x, y, greed, coarseTh)
 							: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag, x, y, polarity, greed, coarseTh, false);
 						if (sc < coarseTh)
 							continue;
