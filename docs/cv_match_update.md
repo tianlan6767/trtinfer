@@ -163,3 +163,21 @@ matcher.setTemplate(templ, mask)
 - SHAPE 只额外去掉「尺度比 > 1.08、中心仍落在 0.5 倍较小边内、分数低于更强命中的 0.72 倍」的旁瓣。同尺度不走这条。
 
 `tests/test_scale_match.cpp` 增加 `testPatternRingArcRejected`、`testPatternKeepsNeighborInMargin`、`testPatternOneQuadrantOcclusion`，四个整圈在 ±20° 下仍是 4。`make test-scale` 仍不需要 TensorRT。Windows 上再按 [env_windows.md](env_windows.md) 用 CMake 重编后，跑原来的 Halcon 对照；官方图仍不进仓库。
+
+## 10. 弱的第三颗点，以及还剩的一个圆环误检（2026-10-21）
+
+第 9 节之后再对官方例图：PATTERN 的 `rings_02` 收到 4，与 Halcon 一致；`rings_03` 4→2（Halcon 1），`rings_04` 6→4（Halcon 3），各还多 1。`green_dots` 的 PATTERN 仍是 2/3，SHAPE 仍是 4（Halcon 3）。SHAPE 的 `rings_02` 仍是 3（Halcon 4），这是第 8 节把 10 个重复收到 3 个时就少的那一个，不是第 9 节退回去的。`board_01`、`face_mask`、`cap_exposure` 的 PATTERN 不变。`cap_exposure_01` 的 SHAPE 本来就是 0（那组例图是 NCC，不是形状模型）。
+
+合成图上对得上的两件事：
+
+- 缺一口的圆环（大约 255°–300°）全局 NCC 可以到 0.81–0.90。最差象限大约 0.39–0.60，达不到「一半象限低于 0.35」，所以第 9 节的规则留着它。整圈的四个象限差距很小。只挡掉一个象限时，另外三个仍然在 0.94 以上。
+- 模板大部分是空白边时，把较小的圆点放在和模板背景不一样的噪声上，全局 NCC 大约 0.49，过不了 0.5。非背景像素的 NCC 仍然接近 1，而且四个象限都对齐。Halcon 形状分大约 0.61 指的是轮廓对上多少，不看这块空白边。
+
+做法：
+
+- 象限差距大的命中，不管全局分有没有到 0.85，都丢掉。只挡一个象限、整圈、整体加亮不丢。
+- 全局分在阈值的 0.82 倍到阈值之间、且非背景像素在至少三个象限都对上时，把这条命中补回来，输出分用非背景像素的 NCC。调用方自己传了 mask 时不走这条，原来的 masked NCC 不变。
+- 边长比超过约 1.10 的两个框，不再用覆盖比例互相吞。0.9 倍贴在 1.0 倍旁边的完整实例可以留下。同一中心仍按 0.4 倍较小边合并。
+- SHAPE 去掉贴在高分命中旁边的低分锁：中心距小于较小边的 0.65 倍，且分数低于 0.78、又不到对方的 0.74 倍。两个高分圆环不进这条。`rings_02` 少的那一个不对着这条放宽，避免把已经对齐的 `rings_03/04` 又放回去。
+
+`make test-scale` 增加 `testPatternWeakThirdOnNoise`、`testPatternAlmostRingRejected`、`testShapeDotSidelobeDropped`。Windows 上再按 [env_windows.md](env_windows.md) 用 CMake 重编后跑原来的 Halcon 对照。希望 PATTERN 的 `green_dots` 变成 3，`rings_03/04` 再各少 1；SHAPE 的 `green_dots` 变成 3。SHAPE 的 `rings_03/04` 保持 1 和 3，`rings_02` 仍可能是 3。PATTERN 的 `board_01` / `face_mask` / `cap_exposure` 个数和分数应不变。

@@ -33,7 +33,7 @@ namespace template_matching
 		// 多实例去重：同一中心的不同角度、相邻尺度上的错位锁，都算同一个目标。
 		// 尺寸接近时，较小框被盖住的比例超过 iouThreshold 也去掉（<=0 时按 0.5，Halcon MaxOverlap 默认）。
 		// 尺寸差一截且中心分开的，不因为大框的空白边包住小框而删掉。
-		// dropWeakNearby：尺度明显不同、中心仍靠近、且分数低一截的，视为错尺度旁瓣。
+		// dropWeakNearby：中心仍落在较小边的 0.65 倍内，且分数低于 0.78、又不到更强命中的 0.74 倍，视为旁瓣。
 		static void suppressMatchOverlap(std::vector<MatchResult>& results, double iouThreshold, int maxCount,
 										 bool dropWeakNearby = false);
 

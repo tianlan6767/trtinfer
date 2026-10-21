@@ -240,17 +240,16 @@ namespace template_matching
 				const double minSide = std::min(sideA, sideB);
 				const double maxSide = std::max(sideA, sideB);
 				const double dist = std::hypot(cand.Center.x - prev.Center.x, cand.Center.y - prev.Center.y);
-				const bool similar = maxSide <= minSide * 1.18;
+				// 1.10：0.9 倍和 1.0 倍不再当成「一样大」用覆盖比例互相吞掉。同一次实例的中心距判断不变。
+				const bool similar = maxSide <= minSide * 1.10;
 				if (dist < centerFrac * minSide)
 					drop = true;
 				else if (similar && smallerCoveredFraction(cand, prev) > coverThr)
 					drop = true;
 				else if (dropWeakNearby)
 				{
-					const double scaleLo = std::max(1e-6, std::min(cand.Scale, prev.Scale));
-					const double scaleRatio = std::max(cand.Scale, prev.Scale) / scaleLo;
-					// 只打掉明显换了尺度、又贴在更强命中旁边的低分锁。同尺度不进这里。
-					if (scaleRatio > 1.08 && dist < 0.50 * minSide && cand.Score < prev.Score * 0.72)
+					// 贴在高分命中旁边、自己又明显更低的，是错位锁。两个都在 0.78 以上的不进这里，避免并掉靠得近的真圆环。
+					if (dist < 0.65 * minSide && cand.Score < 0.78 && cand.Score < prev.Score * 0.74)
 						drop = true;
 				}
 				if (drop)
