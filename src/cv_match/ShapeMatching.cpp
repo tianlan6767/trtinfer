@@ -696,7 +696,8 @@ double scorePoseMap(const std::vector<MapPoint>& model, const OriResponse16& res
 			best = base[(size_t)ml * planeStride + (size_t)py * (size_t)w + (size_t)px];
 		sum += (double)best;
 		++used;
-		if (poseHopeless(sum, used, n, i, abortBelow))
+		// 过线的位置占大多数时，每个点都做无望判断不划算。隔几个点查一次，结论不变。
+		if ((i & 3) == 3 && poseHopeless(sum, used, n, i, abortBelow))
 			return sum / n;
 	}
 	return meanInFrame(sum, used, n);
@@ -851,7 +852,7 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCo
 // 同分平台只在大约 4px 内收质心。整幅半径都收，会把两个挨着的峰收到中间，两边都对不上。
 constexpr double kInteriorRescueMin = 8.0;
 constexpr double kInteriorBlendRadius = 4.0;
-constexpr int kRingSectors = 8;
+constexpr int kRingSectors = 4;
 constexpr int kMaxInteriorRescue = 24;
 
 struct RingPick
@@ -863,6 +864,48 @@ struct RingPick
 void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int maxCount,
 					   std::vector<RingPick>& picks)
 {
+	// 同一像素上只有角度不同，距离是 0，去重也只会留最高的那个。
+	// 先收成每个像素一个再排序，避免纹理图上几十万条候选把排序拖到几十毫秒。
+	// 尺度不是 1 时不收，避免把同一中心的另一个尺度删掉。
+	{
+		bool unitScale = true;
+		int maxX = 1;
+		int maxY = 1;
+		for (const auto& c : cands)
+		{
+			if (std::fabs(c.scale - 1.0) > 1e-6)
+				unitScale = false;
+			maxX = std::max(maxX, (int)std::lround(c.cx) + 1);
+			maxY = std::max(maxY, (int)std::lround(c.cy) + 1);
+		}
+		if (unitScale && maxX > 1 && maxY > 1 && (long long)maxX * maxY <= 2000000ll)
+		{
+			std::vector<int> bestPix((size_t)maxX * (size_t)maxY, -1);
+			std::vector<ShapeCandidate> extra;
+			for (int i = 0; i < (int)cands.size(); ++i)
+			{
+				const int x = (int)std::lround(cands[i].cx);
+				const int y = (int)std::lround(cands[i].cy);
+				if (x < 0 || y < 0 || x >= maxX || y >= maxY)
+				{
+					extra.push_back(cands[i]);
+					continue;
+				}
+				int& slot = bestPix[(size_t)y * (size_t)maxX + (size_t)x];
+				if (slot < 0 || candidatePrecedes(cands[i], cands[slot]))
+					slot = i;
+			}
+			std::vector<ShapeCandidate> uniq;
+			uniq.reserve(extra.size() + 1024);
+			uniq.insert(uniq.end(), extra.begin(), extra.end());
+			for (int slot : bestPix)
+			{
+				if (slot >= 0)
+					uniq.push_back(cands[slot]);
+			}
+			cands.swap(uniq);
+		}
+	}
 	std::sort(cands.begin(), cands.end(), candidatePrecedes);
 	struct Acc
 	{
@@ -948,7 +991,7 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 	}
 
 	// 每个像素只留排序后的第一名。cands 已按 candidatePrecedes 排过，先出现的就是该像素最高分。
-	// 每个种子的环带再切成 8 个方向、两段距离。每格留下响应图最高的和更远的那个，
+	// 每个种子的环带再切成 4 个方向、两段距离。每格留下响应图最高的和更远的那个，
 	// 后面用浮点分二选一。只留响应图最高会停在假峰尾巴上，够不着 (318,180) 这种真峰。
 	struct PixKey
 	{
@@ -1296,7 +1339,11 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		{
 			std::vector<ShapeCandidate> local;
 			const auto model = rotateModel(topModel.edges, angles[ai]);
-			const std::vector<MapPoint> mapPts = quantCoarse ? makeMapPoints(model) : std::vector<MapPoint>();
+			// 内部每隔一个角度查响应图。角度误差最多大约一步，第一层 ±12° 接得回来。
+			// 贴边每个角度都用浮点分，T11 的 ±3 步窗口接不住被拉大的角度步长。
+			const bool interiorAngle = (ai & 1) == 0;
+			const std::vector<MapPoint> mapPts =
+				(quantCoarse && interiorAngle) ? makeMapPoints(model) : std::vector<MapPoint>();
 			for (int y = margin; y < pyr[top].rows - margin; y += stride)
 			{
 				for (int x = margin; x < pyr[top].cols - margin; x += stride)
@@ -1305,6 +1352,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 					// 弱残件排不进前几百个峰，下一层也就看不到。
 					const bool border = quantCoarse &&
 						onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, margin, kCoarseBorderBand);
+					if (quantCoarse && !border && !interiorAngle)
+						continue;
 					const double sc = (quantCoarse && !border)
 						? scorePoseMap(mapPts, respTop, x, y, greed, coarseTh)
 						: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
@@ -1345,7 +1394,9 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			const int ai = jobs[ji].first;
 			const double objScale = scales_[jobs[ji].second];
 			const auto model = scaleEdges(rotateModel(topModel.edges, angles[ai]), objScale);
-			const std::vector<MapPoint> mapPts = quantCoarse ? makeMapPoints(model) : std::vector<MapPoint>();
+			const bool interiorAngle = (ai & 1) == 0;
+			const std::vector<MapPoint> mapPts =
+				(quantCoarse && interiorAngle) ? makeMapPoints(model) : std::vector<MapPoint>();
 			const int mgn = borderMargin(pyr[top].rows, pyr[top].cols, scaleStride);
 			for (int y = mgn; y < pyr[top].rows - mgn; y += scaleStride)
 			{
@@ -1353,6 +1404,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				{
 					const bool border = quantCoarse &&
 						onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, mgn, kCoarseBorderBand);
+					if (quantCoarse && !border && !interiorAngle)
+						continue;
 					const double sc = (quantCoarse && !border)
 						? scorePoseMap(mapPts, respTop, x, y, greed, coarseTh)
 						: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
@@ -1397,15 +1450,36 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		nmsInteriorRescue(interior, minDistTop, keep, ringPicks);
 		if (!ringPicks.empty())
 		{
-			// 响应图分数在扩散之后分不出真峰和假峰尾巴。用浮点余弦在环带候选上再打一次，
-			// 每个已留种子只留浮点分最高的一个，全局最多 24 个。贴边候选不在这份名单里。
-			std::vector<double> floatScore(ringPicks.size(), 0.0);
-#pragma omp parallel for schedule(dynamic)
+			// 响应图分数在扩散之后分不出真峰和假峰尾巴。先用隔点模型把环带候选排一下，
+			// 每个种子只对第一名做完整浮点分。贴边候选不在这份名单里。
+			std::vector<ShapeEdgePt> sparseSrc;
+			sparseSrc.reserve(topModel.edges.size() / 4 + 1);
+			for (size_t ei = 0; ei < topModel.edges.size(); ei += 4)
+				sparseSrc.push_back(topModel.edges[ei]);
+			if (sparseSrc.size() < 8)
+				sparseSrc = topModel.edges;
+			std::unordered_map<long long, int> angleSlot;
+			std::vector<std::vector<ShapeEdgePt>> sparseModels;
+			std::vector<int> pickModel(ringPicks.size(), -1);
 			for (int i = 0; i < (int)ringPicks.size(); ++i)
 			{
-				const auto model = rotateModel(topModel.edges, ringPicks[i].c.angle);
-				floatScore[i] = scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
-										  ringPicks[i].c.cx, ringPicks[i].c.cy, polarity, greed, coarseTh, false);
+				const long long key = (long long)std::llround(ringPicks[i].c.angle * 1000.0);
+				auto it = angleSlot.find(key);
+				if (it == angleSlot.end())
+				{
+					const int id = (int)sparseModels.size();
+					sparseModels.push_back(rotateModel(sparseSrc, ringPicks[i].c.angle));
+					it = angleSlot.emplace(key, id).first;
+				}
+				pickModel[i] = it->second;
+			}
+			std::vector<double> rankScore(ringPicks.size(), 0.0);
+#pragma omp parallel for schedule(static)
+			for (int i = 0; i < (int)ringPicks.size(); ++i)
+			{
+				rankScore[i] = scorePose(sparseModels[pickModel[i]], nx[top], ny[top], mag[top],
+										 (float)matchParam_.edgeMinMag, ringPicks[i].c.cx, ringPicks[i].c.cy,
+										 polarity, greed, coarseTh, false);
 			}
 			int maxSeed = 0;
 			for (const auto& p : ringPicks)
@@ -1413,12 +1487,34 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			std::vector<int> best(maxSeed + 1, -1);
 			for (int i = 0; i < (int)ringPicks.size(); ++i)
 			{
-				if (floatScore[i] < coarseTh)
+				if (rankScore[i] < coarseTh * 0.75)
 					continue;
 				const int s = ringPicks[i].seed;
-				if (best[s] < 0 || floatScore[i] > floatScore[best[s]] ||
-					(floatScore[i] == floatScore[best[s]] && candidatePrecedes(ringPicks[i].c, ringPicks[best[s]].c)))
+				if (best[s] < 0 || rankScore[i] > rankScore[best[s]] ||
+					(rankScore[i] == rankScore[best[s]] && candidatePrecedes(ringPicks[i].c, ringPicks[best[s]].c)))
 					best[s] = i;
+			}
+			std::vector<int> winners;
+			winners.reserve(best.size());
+			for (int b : best)
+			{
+				if (b >= 0)
+					winners.push_back(b);
+			}
+			std::vector<double> floatScore(ringPicks.size(), 0.0);
+#pragma omp parallel for schedule(static)
+			for (int wi = 0; wi < (int)winners.size(); ++wi)
+			{
+				const int i = winners[wi];
+				const auto model = rotateModel(topModel.edges, ringPicks[i].c.angle);
+				floatScore[i] = scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
+										  ringPicks[i].c.cx, ringPicks[i].c.cy, polarity, greed, coarseTh, false);
+			}
+			for (int s = 0; s < (int)best.size(); ++s)
+			{
+				const int i = best[s];
+				if (i >= 0 && floatScore[i] < coarseTh)
+					best[s] = -1;
 			}
 			std::vector<ShapeCandidate> rings;
 			rings.reserve(best.size());
@@ -1469,7 +1565,10 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			// 贴边恒为 ±4。普通内部种子先在 ±4 里找；这里已经过 0.5 就不再往外扩，
 			// 避免 233 上 (318,180)、(656,134) 这类真峰被 ±10 拖到旁边的假峰上。
 			// 内圈不够 0.5 时再扩到 ±10，接响应图平台边上的种子。环带捞回的种子只用 ±4。
-			const bool widenPos = quantCoarse && layer == top - 1 && !c0.fromBorder && !c0.narrowRefine;
+			// 贴边第一层保持逐像素、逐角度。内部第一层用步长 2 的网格再在胜者周围补 ±1，
+			// 角度也隔一个再补相邻一步。T11 不走这里。
+			const bool interiorFirst = quantCoarse && layer == top - 1 && !c0.fromBorder;
+			const bool widenPos = interiorFirst && !c0.narrowRefine;
 			std::vector<double> angs;
 			if (matchParam_.angle < 1e-6)
 				angs.push_back(0.0);
@@ -1501,15 +1600,23 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			{
 			if (pass == 1 && bestS >= matchParam_.scoreThreshold)
 				break;
+			// ±4 且角度已经铺开之后仍低于粗阈值，±10 里不会突然变成合格命中。
+			// 贴边不进这圈。环带种子 narrowRefine 也不会把位置扩到 ±10。
+			if (pass == 1 && bestS < matchParam_.scoreThreshold * 0.6)
+				break;
 			const int rad = (pass == 1) ? 10 : 4;
+			const int posStep = interiorFirst ? 2 : 1;
 			if (!scaleSearch_)
 			{
-				for (double ang : angs)
+				for (int ia = 0; ia < (int)angs.size(); ++ia)
 				{
+					if (interiorFirst && angs.size() > 8 && (ia & 1) && std::fabs(angs[ia] - c0.angle) > 1e-6)
+						continue;
+					const double ang = angs[ia];
 					const auto model = rotateModel(mdl.edges, ang);
-					for (int dy = -rad; dy <= rad; ++dy)
+					for (int dy = -rad; dy <= rad; dy += posStep)
 					{
-						for (int dx = -rad; dx <= rad; ++dx)
+						for (int dx = -rad; dx <= rad; dx += posStep)
 						{
 							const double cx = cx0 + dx;
 							const double cy = cy0 + dy;
@@ -1550,15 +1657,18 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 						tryScales.push_back(s);
 				}
 				const int radS = rad;
-				for (double ang : angs)
+				for (int ia = 0; ia < (int)angs.size(); ++ia)
 				{
+					if (interiorFirst && angs.size() > 8 && (ia & 1) && std::fabs(angs[ia] - c0.angle) > 1e-6)
+						continue;
+					const double ang = angs[ia];
 					const auto rotated = rotateModel(mdl.edges, ang);
 					for (double objScale : tryScales)
 					{
 						const auto model = scaleEdges(rotated, objScale);
-						for (int dy = -radS; dy <= radS; ++dy)
+						for (int dy = -radS; dy <= radS; dy += posStep)
 						{
-							for (int dx = -radS; dx <= radS; ++dx)
+							for (int dx = -radS; dx <= radS; dx += posStep)
 							{
 								const double cx = cx0 + dx;
 								const double cy = cy0 + dy;
@@ -1581,6 +1691,44 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 					}
 				}
 			}
+			}
+			if (interiorFirst && bestS > 0.0)
+			{
+				const double a0 = best.angle;
+				const double cxb = best.cx;
+				const double cyb = best.cy;
+				for (int ka = -1; ka <= 1; ++ka)
+				{
+					double ang = a0 + ka * step;
+					if (ang > matchParam_.angle)
+						ang = matchParam_.angle;
+					else if (ang < -matchParam_.angle)
+						ang = -matchParam_.angle;
+					const auto model = rotateModel(mdl.edges, ang);
+					for (int dy = -1; dy <= 1; ++dy)
+					{
+						for (int dx = -1; dx <= 1; ++dx)
+						{
+							if (ka == 0 && dx == 0 && dy == 0)
+								continue;
+							const double cx = cxb + dx;
+							const double cy = cyb + dy;
+							if (cx < 0 || cy < 0 || cx > pyr[layer].cols - 1 || cy > pyr[layer].rows - 1)
+								continue;
+							const double sc = scorePose(model, nx[layer], ny[layer], mag[layer],
+													   (float)matchParam_.edgeMinMag, cx, cy, polarity, greed,
+													   matchParam_.scoreThreshold * 0.6, layer == stopLayer);
+							if (sc > bestS)
+							{
+								bestS = sc;
+								best.cx = cx;
+								best.cy = cy;
+								best.angle = ang;
+								best.score = sc;
+							}
+						}
+					}
+				}
 			}
 			if (best.score >= matchParam_.scoreThreshold * (layer == stopLayer ? 1.0 : 0.65))
 			{
