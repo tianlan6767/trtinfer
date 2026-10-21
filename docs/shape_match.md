@@ -77,4 +77,5 @@ make test-shape
 make test-match
 make test-scale    # 只编 cv_match，验证尺度≠1，不需要 TensorRT
 make test-viz     # tests/test_shape_match_viz.py，含两个尺度画在同一张图上
+                  # tests/test_mask_match_viz.py：mask 内才提边缘，输出在 tests/out_viz/mask/
 ```

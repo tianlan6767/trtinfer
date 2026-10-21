@@ -229,6 +229,7 @@ test-viz : $(viz_so)
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_blob_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_pattern_match_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_shape_match_viz.py -v
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_mask_match_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_caliper_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_rect_metrology_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_similarity_viz.py -v
