@@ -67,7 +67,9 @@ double angleStepDeg(const std::vector<ShapeEdgePt>& edges)
 	return std::max(0.25, std::atan(1.0 / maxR) * kR2D);
 }
 
-void computeUnitGrad(const cv::Mat& gray, cv::Mat& nx, cv::Mat& ny, cv::Mat& mag)
+// packedXY 不为空时，顺手把单位法向收成一对。打分时每个模型点只碰一块内存。
+// 幅值仍单独放着：最细一层的象限权重要用它，不能改计算顺序。
+void computeUnitGrad(const cv::Mat& gray, cv::Mat& nx, cv::Mat& ny, cv::Mat& mag, cv::Mat* packedXY = nullptr)
 {
 	cv::Mat gx, gy;
 	cv::Sobel(gray, gx, CV_32F, 1, 0, 3);
@@ -75,6 +77,8 @@ void computeUnitGrad(const cv::Mat& gray, cv::Mat& nx, cv::Mat& ny, cv::Mat& mag
 	mag.create(gray.size(), CV_32F);
 	nx.create(gray.size(), CV_32F);
 	ny.create(gray.size(), CV_32F);
+	if (packedXY)
+		packedXY->create(gray.size(), CV_32FC2);
 	for (int y = 0; y < gray.rows; ++y)
 	{
 		const float* px = gx.ptr<float>(y);
@@ -82,6 +86,7 @@ void computeUnitGrad(const cv::Mat& gray, cv::Mat& nx, cv::Mat& ny, cv::Mat& mag
 		float* pnx = nx.ptr<float>(y);
 		float* pny = ny.ptr<float>(y);
 		float* pm = mag.ptr<float>(y);
+		cv::Vec2f* pack = packedXY ? packedXY->ptr<cv::Vec2f>(y) : nullptr;
 		for (int x = 0; x < gray.cols; ++x)
 		{
 			const float m = std::hypot(px[x], py[x]);
@@ -96,6 +101,8 @@ void computeUnitGrad(const cv::Mat& gray, cv::Mat& nx, cv::Mat& ny, cv::Mat& mag
 				pnx[x] = 0.f;
 				pny[x] = 0.f;
 			}
+			if (pack)
+				pack[x] = cv::Vec2f(pnx[x], pny[x]);
 		}
 	}
 }
@@ -587,9 +594,61 @@ std::vector<ShapeEdgePt> rotateModel(const std::vector<ShapeEdgePt>& src, double
 	return out;
 }
 
+// 不成对时，nx 和 ny 隔着整幅图。这里每个点只读一行里相邻的两个浮点，计算顺序与分开的两张图相同。
+// 不加权幅值：权是 1，乘上去还是原来的点积。提前停的条件和返回的偏低分也不变。
+double scorePosePacked(const ShapeEdgePt* pts, int n, const cv::Mat& packed, double cx, double cy,
+					   bool polarity, double abortBelow)
+{
+	if (n <= 0)
+		return 0.0;
+	const int w = packed.cols, h = packed.rows;
+	if (w < 2 || h < 2 || packed.type() != CV_32FC2 || (packed.step % sizeof(float)) != 0)
+		return 0.0;
+	const float xMax = (float)(w - 1);
+	const float yMax = (float)(h - 1);
+	const float* base = packed.ptr<float>(0);
+	const size_t stride = packed.step / sizeof(float);
+	double sum = 0.0;
+	int used = 0;
+	for (int i = 0; i < n; ++i)
+	{
+		const float px = (float)(cx + pts[i].dx);
+		const float py = (float)(cy + pts[i].dy);
+		if (px < 0.f || py < 0.f || px > xMax || py > yMax)
+			continue;
+		const int x0 = (int)px;
+		const int y0 = (int)py;
+		const int x1 = x0 + 1 < w ? x0 + 1 : x0;
+		const int y1 = y0 + 1 < h ? y0 + 1 : y0;
+		const float dx = px - (float)x0;
+		const float dy = py - (float)y0;
+		const float w00 = (1.f - dx) * (1.f - dy);
+		const float w10 = dx * (1.f - dy);
+		const float w01 = (1.f - dx) * dy;
+		const float w11 = dx * dy;
+		const float* r0 = base + (size_t)y0 * stride;
+		const float* r1 = base + (size_t)y1 * stride;
+		const int i0 = x0 * 2;
+		const int i1 = x1 * 2;
+		const float inx = w00 * r0[i0] + w10 * r0[i1] + w01 * r1[i0] + w11 * r1[i1];
+		const float iny = w00 * r0[i0 + 1] + w10 * r0[i1 + 1] + w01 * r1[i0 + 1] + w11 * r1[i1 + 1];
+		// 点积在 float 里加完再送进 double，和分开的 nx、ny 那条路径同一套舍入。
+		double raw = (double)(pts[i].nx * inx + pts[i].ny * iny);
+		if (!polarity)
+			raw = std::fabs(raw);
+		else if (raw < 0.0)
+			raw = 0.0;
+		sum += raw;
+		++used;
+		if (poseHopeless(sum, used, n, i, abortBelow))
+			return sum / n;
+	}
+	return meanInFrame(sum, used, n);
+}
+
 double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const cv::Mat& ny,
 				 const cv::Mat& mag, float minMag, double cx, double cy, bool polarity, double greediness,
-				 double minScore, bool spatialBalance, int pointStep = 1)
+				 double minScore, bool spatialBalance, int pointStep = 1, const cv::Mat* packedXY = nullptr)
 {
 	const int nAll = (int)model.size();
 	// 隔点会把按方向轮流排好的模型拆成一半方向，角度会排反。只用前一半点，每个方向都还在。
@@ -612,10 +671,19 @@ double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const
 		return 0.0;
 	const float xMax = (float)(w - 1);
 	const float yMax = (float)(h - 1);
+	const bool usePacked = packedXY != nullptr && packedXY->type() == CV_32FC2 &&
+						   packedXY->rows == h && packedXY->cols == w &&
+						   (packedXY->step % sizeof(float)) == 0;
+	// 不看幅值时权恒为 1。走成对法向，点积和提前停与下面这条循环相同。
+	if (usePacked && !spatialBalance)
+		return scorePosePacked(model.data(), n, *packedXY, cx, cy, polarity, abortBelow);
+	const float* packBase = usePacked ? packedXY->ptr<float>(0) : nullptr;
+	const size_t packStride = usePacked ? packedXY->step / sizeof(float) : 0;
+	const ShapeEdgePt* pts = model.data();
 	for (int i = 0; i < n; ++i)
 	{
-		const float px = (float)(cx + model[i].dx);
-		const float py = (float)(cy + model[i].dy);
+		const float px = (float)(cx + pts[i].dx);
+		const float py = (float)(cy + pts[i].dy);
 		if (px < 0.f || py < 0.f || px > xMax || py > yMax)
 			continue;
 		const int x0 = (int)px;
@@ -624,35 +692,49 @@ double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const
 		const int y1 = y0 + 1 < h ? y0 + 1 : y0;
 		const float dx = px - (float)x0;
 		const float dy = py - (float)y0;
-		const float* nx0 = nx.ptr<float>(y0);
-		const float* nx1 = nx.ptr<float>(y1);
-		const float* ny0 = ny.ptr<float>(y0);
-		const float* ny1 = ny.ptr<float>(y1);
 		const float w00 = (1.f - dx) * (1.f - dy);
 		const float w10 = dx * (1.f - dy);
 		const float w01 = (1.f - dx) * dy;
 		const float w11 = dx * dy;
-		const float inx = w00 * nx0[x0] + w10 * nx0[x1] + w01 * nx1[x0] + w11 * nx1[x1];
-		const float iny = w00 * ny0[x0] + w10 * ny0[x1] + w01 * ny1[x0] + w11 * ny1[x1];
+		float inx = 0.f;
+		float iny = 0.f;
 		float sm = magGate;
+		if (usePacked)
+		{
+			const float* r0 = packBase + (size_t)y0 * packStride;
+			const float* r1 = packBase + (size_t)y1 * packStride;
+			const int i0 = x0 * 2;
+			const int i1 = x1 * 2;
+			inx = w00 * r0[i0] + w10 * r0[i1] + w01 * r1[i0] + w11 * r1[i1];
+			iny = w00 * r0[i0 + 1] + w10 * r0[i1 + 1] + w01 * r1[i0 + 1] + w11 * r1[i1 + 1];
+		}
+		else
+		{
+			const float* nx0 = nx.ptr<float>(y0);
+			const float* nx1 = nx.ptr<float>(y1);
+			const float* ny0 = ny.ptr<float>(y0);
+			const float* ny1 = ny.ptr<float>(y1);
+			inx = w00 * nx0[x0] + w10 * nx0[x1] + w01 * nx1[x0] + w11 * nx1[x1];
+			iny = w00 * ny0[x0] + w10 * ny0[x1] + w01 * ny1[x0] + w11 * ny1[x1];
+		}
 		if (spatialBalance)
 		{
 			const float* m0 = mag.ptr<float>(y0);
 			const float* m1 = mag.ptr<float>(y1);
 			sm = w00 * m0[x0] + w10 * m0[x1] + w01 * m1[x0] + w11 * m1[x1];
 		}
-		float w = std::min(1.f, sm / magGate);
-		double raw = model[i].nx * inx + model[i].ny * iny;
+		float wt = std::min(1.f, sm / magGate);
+		double raw = pts[i].nx * inx + pts[i].ny * iny;
 		if (!polarity)
 			raw = std::fabs(raw);
 		else if (raw < 0.0)
 			raw = 0.0;  // 与 16 档余弦表、Halcon use_polarity 一致：反方向记 0，不把整段分数拉成负数
-		const double d = raw * (double)w;
+		const double d = raw * (double)wt;
 		sum += d;
 		++used;
 		if (spatialBalance)
 		{
-			const int q = (model[i].dx >= 0.f ? 1 : 0) + (model[i].dy >= 0.f ? 2 : 0);
+			const int q = (pts[i].dx >= 0.f ? 1 : 0) + (pts[i].dy >= 0.f ? 2 : 0);
 			quadPts[q] += 1;
 			if (d > 0.35)
 				quadHit[q] += 1;
@@ -705,8 +787,9 @@ double scorePoseMap(const std::vector<MapPoint>& model, const OriResponse16& res
 		const double fy = cy + (double)model[i].dy;
 		if (fx < 0.0 || fy < 0.0 || fx > (double)(w - 1) || fy > (double)(h - 1))
 			continue;
-		const int px = (int)std::lround(fx);
-		const int py = (int)std::lround(fy);
+		// 负数已经在上面丢掉。非负时 (int)(x+0.5) 与 lround 同为远离 0 的一侧，但不会进 libm。
+		const int px = (int)(fx + 0.5);
+		const int py = (int)(fy + 0.5);
 		if ((unsigned)px >= (unsigned)w || (unsigned)py >= (unsigned)h)
 			continue;
 		float best = 0.f;
@@ -1305,9 +1388,9 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 
 	std::vector<cv::Mat> pyr;
 	cv::buildPyramid(gray, pyr, top);
-	std::vector<cv::Mat> nx(pyr.size()), ny(pyr.size()), mag(pyr.size());
+	std::vector<cv::Mat> nx(pyr.size()), ny(pyr.size()), mag(pyr.size()), packed(pyr.size());
 	for (int i = 0; i < (int)pyr.size(); ++i)
-		computeUnitGrad(pyr[i], nx[i], ny[i], mag[i]);
+		computeUnitGrad(pyr[i], nx[i], ny[i], mag[i], &packed[i]);
 	const bool quantCoarse = matchParam_.oriBins == 16;
 	const bool polarity = matchParam_.usePolarity;
 	// ±kMapSpread 扩散进响应图，不放进位姿循环。步长 kMapStride 的中心误差不超过 spread。
@@ -1376,7 +1459,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 					const double sc = (quantCoarse && !border)
 						? scorePoseMap(mapPts, respTop, x, y, greed, abortMinScore(coarseTh, -1.0, greed))
 						: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
-									x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed), false);
+									x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed), false, 1,
+									&packed[top]);
 					if (sc < coarseTh)
 						continue;
 					ShapeCandidate c;
@@ -1428,7 +1512,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 					const double sc = (quantCoarse && !border)
 						? scorePoseMap(mapPts, respTop, x, y, greed, abortMinScore(coarseTh, -1.0, greed))
 						: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
-									x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed), false);
+									x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed), false, 1,
+									&packed[top]);
 					if (sc < coarseTh)
 						continue;
 					ShapeCandidate c;
@@ -1492,7 +1577,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			{
 				floatScore[i] = scorePose(fullModels[pickModel[i]], nx[top], ny[top], mag[top],
 										  (float)matchParam_.edgeMinMag, ringPicks[i].c.cx, ringPicks[i].c.cy,
-										  polarity, greed, abortMinScore(coarseTh, -1.0, greed), false);
+										  polarity, greed, abortMinScore(coarseTh, -1.0, greed), false, 1,
+										  &packed[top]);
 			}
 			int maxSeed = 0;
 			for (const auto& p : ringPicks)
@@ -1631,10 +1717,46 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 								double objScale) {
 				if (cx < 0 || cy < 0 || cx > pyr[layer].cols - 1 || cy > pyr[layer].rows - 1)
 					return;
+				// 内部只为了保住隔开的几个高分。3px 内要超过那一个峰；名额满了要超过最低的那个。
+				// 用全局最低去挡旁边的弱峰会把 0.4 的真位置丢掉。门槛乘过贪心之后，提前返回的偏低分
+				// 严格低于要超过的峰，算得过的位姿仍会把点打完。贴边仍对着当前最高分停。
+				int slot = -1;
+				double rival = -1.0;
+				if (fastInterior)
+				{
+					for (int k = 0; k < nPeaks; ++k)
+					{
+						const double ddx = peaks[k].cx - cx;
+						const double ddy = peaks[k].cy - cy;
+						if (ddx * ddx + ddy * ddy <= 9.0)
+						{
+							slot = k;
+							break;
+						}
+					}
+					if (slot >= 0)
+						rival = peaks[slot].score;
+					else if (nPeaks >= 8)
+					{
+						rival = peaks[0].score;
+						for (int k = 1; k < nPeaks; ++k)
+						{
+							if (peaks[k].score < rival)
+								rival = peaks[k].score;
+						}
+					}
+				}
+				double bestForAbort = fastInterior ? -1.0 : bestS;
+				if (rival >= 0.0)
+				{
+					const double g = std::max(1e-12, std::min(1.0, greed));
+					if (rival >= (matchParam_.scoreThreshold * 0.6) / g)
+						bestForAbort = rival * g;
+				}
 				const double sc = scorePose(model, nx[layer], ny[layer], mag[layer], (float)matchParam_.edgeMinMag,
 											cx, cy, polarity, greed,
-											abortMinScore(matchParam_.scoreThreshold * 0.6, fastInterior ? -1.0 : bestS, greed),
-											fastInterior ? false : layer == stopLayer, searchStep);
+											abortMinScore(matchParam_.scoreThreshold * 0.6, bestForAbort, greed),
+											fastInterior ? false : layer == stopLayer, searchStep, &packed[layer]);
 				if (!fastInterior)
 				{
 					if (sc > bestS)
@@ -1651,15 +1773,6 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				}
 				if (sc < 0.0)
 					return;
-				int slot = -1;
-				for (int k = 0; k < nPeaks; ++k)
-				{
-					if (std::hypot(peaks[k].cx - cx, peaks[k].cy - cy) <= 3.0)
-					{
-						slot = k;
-						break;
-					}
-				}
 				if (slot >= 0)
 				{
 					if (sc > peaks[slot].score)
@@ -1712,13 +1825,21 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				for (int ia : angOrder)
 				{
 					const double ang = angs[ia];
+					// ±4 已经选出角度。外圈只在这个角度附近补位置，避免每个外点再扫一整段角。
+					if (pass == 1 && std::fabs(ang - best.angle) > step * 2.0 + 1e-6 &&
+						std::fabs(ang - c0.angle) > 1e-6)
+						continue;
 					const auto model = rotateModel(mdl.edges, ang);
-					consider(model, ang, cx0, cy0, c0.scale);
+					// 第二圈只补 ±4 外面。里面上一圈已经用浮点分留下最高的。
+					if (pass == 0)
+						consider(model, ang, cx0, cy0, c0.scale);
 					for (int dy = -rad; dy <= rad; dy += posStep)
 					{
 						for (int dx = -rad; dx <= rad; dx += posStep)
 						{
 							if (dx == 0 && dy == 0)
+								continue;
+							if (pass == 1 && std::abs(dx) <= 4 && std::abs(dy) <= 4)
 								continue;
 							consider(model, ang, cx0 + dx, cy0 + dy, c0.scale);
 						}
@@ -1748,16 +1869,22 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				for (int ia : angOrder)
 				{
 					const double ang = angs[ia];
+					if (pass == 1 && std::fabs(ang - best.angle) > step * 2.0 + 1e-6 &&
+						std::fabs(ang - c0.angle) > 1e-6)
+						continue;
 					const auto rotated = rotateModel(mdl.edges, ang);
 					for (double objScale : tryScales)
 					{
 						const auto model = scaleEdges(rotated, objScale);
-						consider(model, ang, cx0, cy0, objScale);
+						if (pass == 0)
+							consider(model, ang, cx0, cy0, objScale);
 						for (int dy = -radS; dy <= radS; dy += posStep)
 						{
 							for (int dx = -radS; dx <= radS; dx += posStep)
 							{
 								if (dx == 0 && dy == 0)
+									continue;
+								if (pass == 1 && std::abs(dx) <= 4 && std::abs(dy) <= 4)
 									continue;
 								consider(model, ang, cx0 + dx, cy0 + dy, objScale);
 							}
@@ -1776,7 +1903,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 					const double full = scorePose(model, nx[layer], ny[layer], mag[layer],
 												  (float)matchParam_.edgeMinMag, peaks[k].cx, peaks[k].cy, polarity,
 												  greed, abortMinScore(matchParam_.scoreThreshold * 0.6, bestS, greed),
-												  layer == stopLayer, 1);
+												  layer == stopLayer, 1, &packed[layer]);
 					if (full > bestS)
 					{
 						bestS = full;
@@ -1817,7 +1944,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 							const double sc = scorePose(model, nx[layer], ny[layer], mag[layer],
 													   (float)matchParam_.edgeMinMag, cx, cy, polarity, greed,
 													   abortMinScore(matchParam_.scoreThreshold * 0.6, bestS, greed),
-													   layer == stopLayer);
+													   layer == stopLayer, 1, &packed[layer]);
 							if (sc > bestS)
 							{
 								bestS = sc;
