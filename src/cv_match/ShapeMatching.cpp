@@ -99,6 +99,51 @@ void computeUnitGrad(const cv::Mat& gray, cv::Mat& nx, cv::Mat& ny, cv::Mat& mag
 	}
 }
 
+// 出界的模型点直接跳过，不记 0。可见点少于模型的这个比例时，仍用全部点数做分母，
+// 避免只擦到画布一条边就被归一化成高分。大约 68% 还在画面里的残件高于这条线。
+// 68% 还在画面里的残件要高于这条线。再低就会把贴边的纹理归一化成 0.55 左右的假命中。
+constexpr double kMinInFrameFrac = 0.62;
+
+bool inFrame32(const cv::Mat& m, float x, float y)
+{
+	const int w = m.cols, h = m.rows;
+	if (w < 2 || h < 2)
+		return false;
+	return x >= 0.f && y >= 0.f && x <= (float)(w - 1) && y <= (float)(h - 1);
+}
+
+double meanInFrame(double sum, int used, int n)
+{
+	if (n <= 0)
+		return 0.0;
+	if (used > 0 && (double)used >= (double)n * kMinInFrameFrac)
+		return sum / (double)used;
+	return sum / (double)n;
+}
+
+// 剩下的点就算全在画面里且方向完全对齐，也到不了贪心门槛。
+bool poseHopeless(double sum, int used, int n, int index, double abortBelow)
+{
+	const int rem = n - index - 1;
+	const int fut = used + rem;
+	const double best = (fut > 0 && (double)fut >= (double)n * kMinInFrameFrac)
+							? (sum + rem) / (double)fut
+							: (sum + (double)rem) / (double)n;
+	return best < abortBelow;
+}
+
+// 顶层不再用模型半径当搜索边距。半径换算回原图大约是 80–120 px，贴边残件的中心进不了粗搜。
+int borderMargin(int rows, int cols, int stride)
+{
+	int m = 2;
+	if (m * 2 + stride >= rows || m * 2 + stride >= cols)
+		m = std::max(1, std::min(rows, cols) / 10);
+	const int cap = std::max(1, std::min(rows, cols) / 4);
+	if (m > cap)
+		m = cap;
+	return std::max(1, m);
+}
+
 inline float sample32(const cv::Mat& m, float x, float y)
 {
 	const int w = m.cols, h = m.rows;
@@ -428,22 +473,28 @@ double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const
 	double sum = 0.0;
 	int quadPts[4] = {0, 0, 0, 0};
 	int quadHit[4] = {0, 0, 0, 0};
-	const double need = minScore * n * std::max(0.0, std::min(1.0, greediness));
+	int used = 0;
+	const double abortBelow = minScore * std::max(0.0, std::min(1.0, greediness));
 	// 只压很弱的纹理。门槛封顶，不随 edgeMinMag 抬到 119 那种对比度，否则正常边缘和残缺件会被乘到 0.5 下面。
 	const float magGate = std::min(32.f, std::max(8.f, 2.5f * minMag));
 	for (int i = 0; i < n; ++i)
 	{
 		const float px = (float)(cx + model[i].dx);
 		const float py = (float)(cy + model[i].dy);
+		if (!inFrame32(nx, px, py))
+			continue;
 		const float inx = sample32(nx, px, py);
 		const float iny = sample32(ny, px, py);
 		const float sm = spatialBalance ? sample32(mag, px, py) : magGate;
-		const float w = std::min(1.f, sm / magGate);
-		double d = model[i].nx * inx + model[i].ny * iny;
+		float w = std::min(1.f, sm / magGate);
+		double raw = model[i].nx * inx + model[i].ny * iny;
 		if (!polarity)
-			d = std::fabs(d);
-		d *= (double)w;
+			raw = std::fabs(raw);
+		else if (raw < 0.0)
+			raw = 0.0;  // 与 16 档余弦表、Halcon use_polarity 一致：反方向记 0，不把整段分数拉成负数
+		const double d = raw * (double)w;
 		sum += d;
+		++used;
 		if (spatialBalance)
 		{
 			const int q = (model[i].dx >= 0.f ? 1 : 0) + (model[i].dy >= 0.f ? 2 : 0);
@@ -451,10 +502,10 @@ double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const
 			if (d > 0.35)
 				quadHit[q] += 1;
 		}
-		if (sum + (n - i - 1) < need)
+		if (poseHopeless(sum, used, n, i, abortBelow))
 			return sum / n;
 	}
-	const double mean = sum / n;
+	double mean = meanInFrame(sum, used, n);
 	if (!spatialBalance)
 		return mean;
 	// 闭合轮廓（圆点、圆环）四个象限都有点。弧状干扰只贴住一侧，平均分仍可能过阈值。
@@ -472,7 +523,7 @@ double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const
 	if (present >= 3 && good < present)
 	{
 		const double balance = (double)good / (double)present;
-		return mean * (0.55 + 0.45 * balance);
+		mean *= (0.55 + 0.45 * balance);
 	}
 	return mean;
 }
@@ -490,18 +541,22 @@ double scorePoseQuant(const std::vector<ShapeEdgePt>& model, const cv::Mat& ori,
 	for (int i = 0; i < n; ++i)
 		label[i] = oriBin16(model[i].nx, model[i].ny);
 	double sum = 0.0;
-	const double need = minScore * n * std::max(0.0, std::min(1.0, greediness));
+	int used = 0;
+	const double abortBelow = minScore * std::max(0.0, std::min(1.0, greediness));
 	const int sp = std::max(0, spread);
 	const int w = ori.cols;
 	const int h = ori.rows;
 	for (int i = 0; i < n; ++i)
 	{
+		const int px = (int)std::lround(cx + model[i].dx);
+		const int py = (int)std::lround(cy + model[i].dy);
+		// 点本身在画布外就跳过，不用邻域往画面里捞一条边来凑分。
+		if (px < 0 || py < 0 || px >= w || py >= h)
+			continue;
 		float best = 0.f;
 		const int ml = label[i];
 		if (ml >= 0)
 		{
-			const int px = (int)std::lround(cx + model[i].dx);
-			const int py = (int)std::lround(cy + model[i].dy);
 			for (int oy = -sp; oy <= sp; ++oy)
 			{
 				const int y = py + oy;
@@ -523,10 +578,11 @@ double scorePoseQuant(const std::vector<ShapeEdgePt>& model, const cv::Mat& ori,
 			}
 		}
 		sum += (double)best;
-		if (sum + (n - i - 1) < need)
+		++used;
+		if (poseHopeless(sum, used, n, i, abortBelow))
 			return sum / n;
 	}
-	return sum / n;
+	return meanInFrame(sum, used, n);
 }
 
 MatchResult packResult(double cx, double cy, double angleDeg, double score, int tw, int th, double objScale)
@@ -715,14 +771,13 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 
 	const int tw = topModel.width, th = topModel.height;
 	const float maxR = modelRadius(topModel.edges);
-	int margin = (int)std::ceil(maxR) + 1;
-	margin = std::min(margin, std::max(1, std::min(pyr[top].rows, pyr[top].cols) / 4));
 	int stride = std::max(1, std::min(tw, th) / 8);
 	if (stride > 4)
 		stride = 4;
 	// 16 档粗搜的邻域是 ±2。步长收到 2，精修 ±4 才盖得住斜向漏格。
 	if (quantCoarse && stride > 2)
 		stride = 2;
+	const int margin = borderMargin(pyr[top].rows, pyr[top].cols, stride);
 	const double coarseTh = matchParam_.scoreThreshold * 0.72;
 	const bool polarity = matchParam_.usePolarity;
 	const double greed = matchParam_.greediness;
@@ -782,10 +837,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				const int ai = jobs[ji].first;
 				const double objScale = scales_[jobs[ji].second];
 				const auto model = scaleEdges(rotateModel(topModel.edges, angles[ai]), objScale);
-				int mgn = (int)std::ceil(maxR * (float)objScale) + 1;
-				mgn = std::min(mgn, std::max(1, std::min(pyr[top].rows, pyr[top].cols) / 4));
-				if (mgn * 2 + scaleStride >= pyr[top].rows || mgn * 2 + scaleStride >= pyr[top].cols)
-					mgn = std::max(1, std::min(pyr[top].rows, pyr[top].cols) / 10);
+				const int mgn = borderMargin(pyr[top].rows, pyr[top].cols, scaleStride);
 				for (int y = mgn; y < pyr[top].rows - mgn; y += scaleStride)
 				{
 					for (int x = mgn; x < pyr[top].cols - mgn; x += scaleStride)
@@ -864,7 +916,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 						{
 							const double cx = cx0 + dx;
 							const double cy = cy0 + dy;
-							if (cx < 2 || cy < 2 || cx >= pyr[layer].cols - 2 || cy >= pyr[layer].rows - 2)
+							if (cx < 0 || cy < 0 || cx > pyr[layer].cols - 1 || cy > pyr[layer].rows - 1)
 								continue;
 							const double sc = scorePose(model, nx[layer], ny[layer], mag[layer], (float)matchParam_.edgeMinMag,
 													   cx, cy, polarity, greed,
@@ -913,7 +965,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 							{
 								const double cx = cx0 + dx;
 								const double cy = cy0 + dy;
-								if (cx < 2 || cy < 2 || cx >= pyr[layer].cols - 2 || cy >= pyr[layer].rows - 2)
+								if (cx < 0 || cy < 0 || cx > pyr[layer].cols - 1 || cy > pyr[layer].rows - 1)
 									continue;
 								const double sc = scorePose(model, nx[layer], ny[layer], mag[layer], (float)matchParam_.edgeMinMag,
 														   cx, cy, polarity, greed,
