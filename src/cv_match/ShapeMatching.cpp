@@ -257,8 +257,7 @@ constexpr int kMapSpread = 3;
 constexpr int kMapStride = 4;
 
 // 粗搜进精修的名额。不能比步长加倍之前更紧：maxCount=200 时旧名额是 800，
-// 收到 400 会在纹理图上把贴边弱分挤掉。oriBins=16 再垫一个下限。
-// 贴边名单用这个数。内部平台去重可以再宽一档，但不能再把贴边收进 8px。
+// 收到 400 会在纹理图上把贴边弱分挤掉。oriBins=16 再垫一个下限。贴边和内部都用这个数。
 int coarseKeepCount(int maxCount, bool quant)
 {
 	const int loose = std::max(maxCount * 4, maxCount + 8);
@@ -274,10 +273,6 @@ int refineKeepCount(int maxCount, bool quant)
 		return loose;
 	return std::max(loose, 96);
 }
-
-// 只用于内部响应图。贴边浮点分仍用整幅去重半径（大约 16px）。
-// 8b3bbe7 把 8px 用到贴边名单上之后，233 的 T11 从 (25,159)@0.532 消失，最近命中大约 293px。
-constexpr double kPlateauDist = 8.0;
 struct OriResponse16
 {
 	int width = 0;
@@ -1141,26 +1136,9 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	const double minDistTop = 0.45 * std::max(4.0, topSpan);
 	if (quantCoarse)
 	{
-		// 贴边用整幅半径，和 8e6638d 一样：不收质心，名额是 coarseKeepCount。
-		// 内部响应图才缩到大约 8px，让 8～16px 外的弱真峰不要被 1 分假峰提前删掉。
-		std::vector<ShapeCandidate> border;
-		std::vector<ShapeCandidate> interior;
-		border.reserve(coarse.size() / 8 + 1);
-		interior.reserve(coarse.size());
-		for (const auto& c : coarse)
-		{
-			if (c.fromBorder)
-				border.push_back(c);
-			else
-				interior.push_back(c);
-		}
-		const double plateau = std::min(minDistTop, kPlateauDist);
-		const int borderKeep = coarseKeepCount(matchParam_.maxCount, true);
-		nmsCandidates(interior, plateau, borderKeep, true, plateau);
-		nmsCandidates(border, minDistTop, borderKeep, false);
-		coarse.clear();
-		coarse.insert(coarse.end(), interior.begin(), interior.end());
-		coarse.insert(coarse.end(), border.begin(), border.end());
+		// 贴边和内部都用整幅半径，和 8e6638d 一样。8px 平台去重会让贴边假峰多留到精修，
+		// 233 上 T11 会从 (25,159)@0.532 消失。内部若单独缩半径，第一层 ±10 px 的种子数会把 find 拉回数秒。
+		nmsKeepOrigins(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, true), true);
 	}
 	else
 		nmsCandidates(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, false), false);
