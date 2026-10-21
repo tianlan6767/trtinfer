@@ -103,4 +103,4 @@ std::vector<template_matching::MatchResult> results;
 matcher->match(gray, results);
 ```
 
-可视化（不弹窗，图片在 `tests/out_viz/pattern/`）：`make test-viz` 里的 `tests/test_pattern_match_viz.py`。同一张搜索图上会画两个尺度。见 [tests/README.md](../tests/README.md)。
+可视化（不弹窗，图片在 `tests/out_viz/pattern/`）：`make test-viz` 里的 `tests/test_pattern_match_viz.py`。同一张搜索图上会画两个尺度。掩膜对照在 `tests/test_mask_match_viz.py`，图片在 `tests/out_viz/mask/`：模板 ROI 外有文字、孔和噪声，不带 mask 会锁到干扰峰，带 mask 回到目标位姿。见 [tests/README.md](../tests/README.md)。
