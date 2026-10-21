@@ -165,6 +165,19 @@ test-rect :
 		$$(pkg-config --cflags --libs opencv4)
 	@$(objdir)/test_rect
 
+# 金样比对：只编 cv_golden 及其复用的定位 / Blob / ORB，不链 TensorRT / CUDA。
+test-golden :
+	@mkdir -p $(objdir)
+	@$(cc) -std=$(stdcpp) -O2 -fopenmp -pthread -I$(srcdir) \
+		$(CURDIR)/tests/test_golden.cpp \
+		$(srcdir)/cv_golden/golden.cpp \
+		$(srcdir)/cv_blob/blob.cpp \
+		$(srcdir)/cv_sim/similarity.cpp \
+		$(srcdir)/cv_feature/feature.cpp \
+		-o $(objdir)/test_golden \
+		$$(pkg-config --cflags --libs opencv4)
+	@$(objdir)/test_golden
+
 # 传统视觉可视化：不链 TensorRT / CUDA，不弹窗，图片写到 tests/out_viz/。
 # 已有 workspace/cvter.so 时仍编这份无 GPU 模块，保证新接口在没编过完整 so 时也能测。
 viz_py_dir := $(objdir)/pytrad
@@ -176,6 +189,7 @@ viz_srcs := \
 	$(srcdir)/bind_trad.cpp \
 	$(srcdir)/bind_extra.cpp \
 	$(srcdir)/cv_blob/blob.cpp \
+	$(srcdir)/cv_golden/golden.cpp \
 	$(srcdir)/cv_caliper/caliper.cpp \
 	$(srcdir)/cv_caliper/metrology.cpp \
 	$(srcdir)/cv_match/PatternMatching.cpp \
@@ -203,6 +217,7 @@ test-viz : $(viz_so)
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_caliper_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_rect_metrology_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_similarity_viz.py -v
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_golden_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_seg_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_feature_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_code_viz.py -v
@@ -251,4 +266,4 @@ $(objdir)/%.cu.mk : $(srcdir)/%.cu
 clean :
 	@rm -rf $(objdir) $(workdir)/$(name) $(workdir)/pro  $(workdir)/imgs
 
-.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab test-scale test-blob test-rect test-viz
+.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab test-scale test-blob test-rect test-golden test-viz
