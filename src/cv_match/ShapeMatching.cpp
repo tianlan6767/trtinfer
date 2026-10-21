@@ -124,6 +124,19 @@ double meanInFrame(double sum, int used, int n)
 	return sum / (double)n;
 }
 
+// 调用方传入的是「至少要够到的分数」。贪心再乘一次。已经有更好的位姿时，
+// 把门槛抬到那个分数：算不赢就停。停下来的平均只会更低，不会换掉真正的最高分。
+double abortMinScore(double floorMin, double bestSoFar, double greed)
+{
+	double need = floorMin;
+	if (bestSoFar > need)
+		need = bestSoFar;
+	const double g = std::max(0.0, std::min(1.0, greed));
+	if (g <= 1e-12)
+		return need;
+	return need / g;
+}
+
 // 剩下的点就算全在画面里且方向完全对齐，也到不了贪心门槛。
 bool poseHopeless(double sum, int used, int n, int index, double abortBelow)
 {
@@ -576,9 +589,15 @@ std::vector<ShapeEdgePt> rotateModel(const std::vector<ShapeEdgePt>& src, double
 
 double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const cv::Mat& ny,
 				 const cv::Mat& mag, float minMag, double cx, double cy, bool polarity, double greediness,
-				 double minScore, bool spatialBalance)
+				 double minScore, bool spatialBalance, int pointStep = 1)
 {
-	const int n = (int)model.size();
+	const int nAll = (int)model.size();
+	// 隔点会把按方向轮流排好的模型拆成一半方向，角度会排反。只用前一半点，每个方向都还在。
+	int n = nAll;
+	if (pointStep > 1)
+		n = std::max(8, nAll / 2);
+	if (n > nAll)
+		n = nAll;
 	if (n <= 0)
 		return 0.0;
 	double sum = 0.0;
@@ -1355,9 +1374,9 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 					if (quantCoarse && !border && !interiorAngle)
 						continue;
 					const double sc = (quantCoarse && !border)
-						? scorePoseMap(mapPts, respTop, x, y, greed, coarseTh)
+						? scorePoseMap(mapPts, respTop, x, y, greed, abortMinScore(coarseTh, -1.0, greed))
 						: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
-									x, y, polarity, greed, coarseTh, false);
+									x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed), false);
 					if (sc < coarseTh)
 						continue;
 					ShapeCandidate c;
@@ -1407,9 +1426,9 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 					if (quantCoarse && !border && !interiorAngle)
 						continue;
 					const double sc = (quantCoarse && !border)
-						? scorePoseMap(mapPts, respTop, x, y, greed, coarseTh)
+						? scorePoseMap(mapPts, respTop, x, y, greed, abortMinScore(coarseTh, -1.0, greed))
 						: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
-									x, y, polarity, greed, coarseTh, false);
+									x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed), false);
 					if (sc < coarseTh)
 						continue;
 					ShapeCandidate c;
@@ -1473,7 +1492,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			{
 				floatScore[i] = scorePose(fullModels[pickModel[i]], nx[top], ny[top], mag[top],
 										  (float)matchParam_.edgeMinMag, ringPicks[i].c.cx, ringPicks[i].c.cy,
-										  polarity, greed, coarseTh, false);
+										  polarity, greed, abortMinScore(coarseTh, -1.0, greed), false);
 			}
 			int maxSeed = 0;
 			for (const auto& p : ringPicks)
@@ -1568,6 +1587,116 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 						angs.push_back(a);
 				}
 			}
+			// 种子角度、中心位置先算。后面的位姿只要不可能超过当前最高分就停。
+			// 内部第一层仍跳过原来的奇数角度下标。贴边不跳，窗口大小也不变。
+			std::vector<int> angOrder;
+			angOrder.reserve(angs.size());
+			int seedI = 0;
+			double seedDist = 1e9;
+			for (int ia = 0; ia < (int)angs.size(); ++ia)
+			{
+				const double d = std::fabs(angs[ia] - c0.angle);
+				if (d < seedDist)
+				{
+					seedDist = d;
+					seedI = ia;
+				}
+			}
+			auto angleKept = [&](int ia) {
+				return !(interiorFirst && (int)angs.size() > 8 && (ia & 1) &&
+						 std::fabs(angs[ia] - c0.angle) > 1e-6);
+			};
+			if (angleKept(seedI))
+				angOrder.push_back(seedI);
+			for (int ia = 0; ia < (int)angs.size(); ++ia)
+			{
+				if (ia != seedI && angleKept(ia))
+					angOrder.push_back(ia);
+			}
+			// 只加快内部精修。贴边仍逐点打分，弱残件（T11 大约 0.53）用前一半点会排丢。
+			// 模型点按方向轮流排，取前一半时每个方向都还在。隔开的几个高分再用完整模型重打。
+			const bool fastInterior = quantCoarse && !c0.fromBorder && (int)mdl.edges.size() >= 16;
+			const int searchStep = fastInterior ? 2 : 1;
+			struct SubPeak
+			{
+				double score = -1;
+				double cx = 0;
+				double cy = 0;
+				double ang = 0;
+				double scale = 1;
+			};
+			SubPeak peaks[8];
+			int nPeaks = 0;
+			auto consider = [&](const std::vector<ShapeEdgePt>& model, double ang, double cx, double cy,
+								double objScale) {
+				if (cx < 0 || cy < 0 || cx > pyr[layer].cols - 1 || cy > pyr[layer].rows - 1)
+					return;
+				const double sc = scorePose(model, nx[layer], ny[layer], mag[layer], (float)matchParam_.edgeMinMag,
+											cx, cy, polarity, greed,
+											abortMinScore(matchParam_.scoreThreshold * 0.6, fastInterior ? -1.0 : bestS, greed),
+											fastInterior ? false : layer == stopLayer, searchStep);
+				if (!fastInterior)
+				{
+					if (sc > bestS)
+					{
+						bestS = sc;
+						best.cx = cx;
+						best.cy = cy;
+						best.angle = ang;
+						best.score = sc;
+						if (scaleSearch_)
+							best.scale = objScale;
+					}
+					return;
+				}
+				if (sc < 0.0)
+					return;
+				int slot = -1;
+				for (int k = 0; k < nPeaks; ++k)
+				{
+					if (std::hypot(peaks[k].cx - cx, peaks[k].cy - cy) <= 3.0)
+					{
+						slot = k;
+						break;
+					}
+				}
+				if (slot >= 0)
+				{
+					if (sc > peaks[slot].score)
+					{
+						peaks[slot].score = sc;
+						peaks[slot].cx = cx;
+						peaks[slot].cy = cy;
+						peaks[slot].ang = ang;
+						peaks[slot].scale = objScale;
+					}
+					return;
+				}
+				if (nPeaks < 8)
+				{
+					peaks[nPeaks].score = sc;
+					peaks[nPeaks].cx = cx;
+					peaks[nPeaks].cy = cy;
+					peaks[nPeaks].ang = ang;
+					peaks[nPeaks].scale = objScale;
+					++nPeaks;
+					return;
+				}
+				int worst = 0;
+				for (int k = 1; k < nPeaks; ++k)
+				{
+					if (peaks[k].score < peaks[worst].score)
+						worst = k;
+				}
+				if (sc > peaks[worst].score)
+				{
+					peaks[worst].score = sc;
+					peaks[worst].cx = cx;
+					peaks[worst].cy = cy;
+					peaks[worst].ang = ang;
+					peaks[worst].scale = objScale;
+				}
+			};
 			for (int pass = 0; pass < (widenPos ? 2 : 1); ++pass)
 			{
 			if (pass == 1 && bestS >= matchParam_.scoreThreshold)
@@ -1580,31 +1709,18 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			const int posStep = interiorFirst ? 2 : 1;
 			if (!scaleSearch_)
 			{
-				for (int ia = 0; ia < (int)angs.size(); ++ia)
+				for (int ia : angOrder)
 				{
-					if (interiorFirst && angs.size() > 8 && (ia & 1) && std::fabs(angs[ia] - c0.angle) > 1e-6)
-						continue;
 					const double ang = angs[ia];
 					const auto model = rotateModel(mdl.edges, ang);
+					consider(model, ang, cx0, cy0, c0.scale);
 					for (int dy = -rad; dy <= rad; dy += posStep)
 					{
 						for (int dx = -rad; dx <= rad; dx += posStep)
 						{
-							const double cx = cx0 + dx;
-							const double cy = cy0 + dy;
-							if (cx < 0 || cy < 0 || cx > pyr[layer].cols - 1 || cy > pyr[layer].rows - 1)
+							if (dx == 0 && dy == 0)
 								continue;
-							const double sc = scorePose(model, nx[layer], ny[layer], mag[layer], (float)matchParam_.edgeMinMag,
-													   cx, cy, polarity, greed,
-													   matchParam_.scoreThreshold * 0.6, layer == stopLayer);
-							if (sc > bestS)
-							{
-								bestS = sc;
-								best.cx = cx;
-								best.cy = cy;
-								best.angle = ang;
-								best.score = sc;
-							}
+							consider(model, ang, cx0 + dx, cy0 + dy, c0.scale);
 						}
 					}
 				}
@@ -1629,40 +1745,51 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 						tryScales.push_back(s);
 				}
 				const int radS = rad;
-				for (int ia = 0; ia < (int)angs.size(); ++ia)
+				for (int ia : angOrder)
 				{
-					if (interiorFirst && angs.size() > 8 && (ia & 1) && std::fabs(angs[ia] - c0.angle) > 1e-6)
-						continue;
 					const double ang = angs[ia];
 					const auto rotated = rotateModel(mdl.edges, ang);
 					for (double objScale : tryScales)
 					{
 						const auto model = scaleEdges(rotated, objScale);
+						consider(model, ang, cx0, cy0, objScale);
 						for (int dy = -radS; dy <= radS; dy += posStep)
 						{
 							for (int dx = -radS; dx <= radS; dx += posStep)
 							{
-								const double cx = cx0 + dx;
-								const double cy = cy0 + dy;
-								if (cx < 0 || cy < 0 || cx > pyr[layer].cols - 1 || cy > pyr[layer].rows - 1)
+								if (dx == 0 && dy == 0)
 									continue;
-								const double sc = scorePose(model, nx[layer], ny[layer], mag[layer], (float)matchParam_.edgeMinMag,
-														   cx, cy, polarity, greed,
-														   matchParam_.scoreThreshold * 0.6, layer == stopLayer);
-								if (sc > bestS)
-								{
-									bestS = sc;
-									best.cx = cx;
-									best.cy = cy;
-									best.angle = ang;
-									best.scale = objScale;
-									best.score = sc;
-								}
+								consider(model, ang, cx0 + dx, cy0 + dy, objScale);
 							}
 						}
 					}
 				}
 			}
+			for (int k = 0; fastInterior && k < nPeaks; ++k)
+			{
+				const double tryAng[2] = {peaks[k].ang, c0.angle};
+				const int nTry = std::fabs(peaks[k].ang - c0.angle) < 1e-6 ? 1 : 2;
+				for (int t = 0; t < nTry; ++t)
+				{
+					const auto rotated = rotateModel(mdl.edges, tryAng[t]);
+					const auto model = scaleSearch_ ? scaleEdges(rotated, peaks[k].scale) : rotated;
+					const double full = scorePose(model, nx[layer], ny[layer], mag[layer],
+												  (float)matchParam_.edgeMinMag, peaks[k].cx, peaks[k].cy, polarity,
+												  greed, abortMinScore(matchParam_.scoreThreshold * 0.6, bestS, greed),
+												  layer == stopLayer, 1);
+					if (full > bestS)
+					{
+						bestS = full;
+						best.cx = peaks[k].cx;
+						best.cy = peaks[k].cy;
+						best.angle = tryAng[t];
+						best.score = full;
+						if (scaleSearch_)
+							best.scale = peaks[k].scale;
+					}
+				}
+			}
+			nPeaks = 0;
 			}
 			if (interiorFirst && bestS > 0.0)
 			{
@@ -1689,7 +1816,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 								continue;
 							const double sc = scorePose(model, nx[layer], ny[layer], mag[layer],
 													   (float)matchParam_.edgeMinMag, cx, cy, polarity, greed,
-													   matchParam_.scoreThreshold * 0.6, layer == stopLayer);
+													   abortMinScore(matchParam_.scoreThreshold * 0.6, bestS, greed),
+													   layer == stopLayer);
 							if (sc > bestS)
 							{
 								bestS = sc;
