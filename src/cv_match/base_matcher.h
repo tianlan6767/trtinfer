@@ -30,6 +30,10 @@ namespace template_matching
 
 		bool getMetricsTime();
 
+		// 多实例去重：同一中心的不同角度、相邻尺度上的错位锁，都算同一个目标。
+		// iouThreshold>0 时，较小框被盖住的比例超过该值也去掉；<=0 时按 0.5（Halcon MaxOverlap 默认）。
+		static void suppressMatchOverlap(std::vector<MatchResult>& results, double iouThreshold, int maxCount);
+
 	protected:
 
 		// 初始化匹配器
@@ -56,7 +60,6 @@ namespace template_matching
 		// 按 MatcherParam 采样尺度。默认只返回 {1}。
 		static std::vector<double> sampleMatchScales(const MatcherParam& param);
 		static bool scaleSearchEnabled(const MatcherParam& param);
-
 
 	private:
 

@@ -753,59 +753,8 @@ namespace template_matching {
 
 	void SuppressOverlap(vector<MatchResult>& results, double maxOverlap, int maxCount)
 	{
-		if (maxCount < 1)
-			maxCount = 1;
-		std::sort(results.begin(), results.end(), [](const MatchResult& a, const MatchResult& b) {
-			return a.Score > b.Score;
-		});
-		vector<MatchResult> kept;
-		for (const MatchResult& cand : results)
-		{
-			vector<Point2f> ptsA{
-				Point2f((float)cand.LeftTop.x, (float)cand.LeftTop.y),
-				Point2f((float)cand.RightTop.x, (float)cand.RightTop.y),
-				Point2f((float)cand.RightBottom.x, (float)cand.RightBottom.y),
-				Point2f((float)cand.LeftBottom.x, (float)cand.LeftBottom.y)};
-			if (ptsA.size() < 3)
-				continue;
-			RotatedRect rectA = minAreaRect(ptsA);
-			bool drop = false;
-			for (const MatchResult& prev : kept)
-			{
-				vector<Point2f> ptsB{
-					Point2f((float)prev.LeftTop.x, (float)prev.LeftTop.y),
-					Point2f((float)prev.RightTop.x, (float)prev.RightTop.y),
-					Point2f((float)prev.RightBottom.x, (float)prev.RightBottom.y),
-					Point2f((float)prev.LeftBottom.x, (float)prev.LeftBottom.y)};
-				RotatedRect rectB = minAreaRect(ptsB);
-				vector<Point2f> inter;
-				int typ = rotatedRectangleIntersection(rectA, rectB, inter);
-				if (typ == INTERSECT_NONE)
-					continue;
-				if (typ == INTERSECT_FULL)
-				{
-					drop = true;
-					break;
-				}
-				if (inter.size() < 3)
-					continue;
-				vector<Point2f> hull;
-				convexHull(Mat(inter), hull, true);
-				double area = contourArea(hull);
-				double base = std::max(1.0, (double)rectB.size.area());
-				if (area / base > maxOverlap)
-				{
-					drop = true;
-					break;
-				}
-			}
-			if (drop)
-				continue;
-			kept.push_back(cand);
-			if ((int)kept.size() >= maxCount)
-				break;
-		}
-		results.swap(kept);
+		// 尺度之间的合并：同一中心的不同角度、错位的相邻尺度都去掉。
+		BaseMatcher::suppressMatchOverlap(results, maxOverlap, maxCount);
 	}
 
 	int PatternMatcher::matchPrepared(const cv::Mat& image, const cv::Mat& templImage, s_TemplData& templData,
@@ -848,10 +797,13 @@ namespace template_matching {
 			vecAngles.push_back(0.0);
 		else
 		{
-			for (double dAngle = 0; dAngle < matchParam_.angle + dAngleStep; dAngle += dAngleStep)
+			// 步长大于剩余角度时，旧条件 `angle + step` 会搜出范围（小模板顶层一步就能到 ±20°）。
+			for (double dAngle = 0; dAngle < matchParam_.angle - 1e-9; dAngle += dAngleStep)
 				vecAngles.push_back(dAngle);
-			for (double dAngle = -dAngleStep; dAngle > -matchParam_.angle - dAngleStep; dAngle -= dAngleStep)
+			vecAngles.push_back(matchParam_.angle);
+			for (double dAngle = -dAngleStep; dAngle > -matchParam_.angle + 1e-9; dAngle -= dAngleStep)
 				vecAngles.push_back(dAngle);
+			vecAngles.push_back(-matchParam_.angle);
 		}
 
 
@@ -868,6 +820,11 @@ namespace template_matching {
 
 		Size sizePat = pTemplData->vecPyramid[iTopLayer].size();
 		bool bCalMaxByBlock = (vecMatSrcPyr[iTopLayer].size().area() / sizePat.area() > 500) && matchParam_.maxCount > 10;
+		// 尺度搜索时每个尺度先多留一些峰，等跨尺度去重后再按 maxCount 截断。
+		// 否则同一圆点的多个角度会占满名额，把更弱的另一个实例挤掉。
+		const int peakBudget = scaleSearch_
+			? std::min(64, matchParam_.maxCount + MATCH_CANDIDATE_NUM - 1 + std::max(matchParam_.maxCount, 6))
+			: matchParam_.maxCount + MATCH_CANDIDATE_NUM - 1;
 		const Scalar borderFill = matchParam_.meanBorder
 			? Scalar(pTemplData->vecTemplMean[0][0])
 			: Scalar(pTemplData->iBorderColor);
@@ -899,7 +856,7 @@ namespace template_matching {
 					if (dMaxVal < vecLayerScore[iTopLayer])
 						continue;
 					local.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
-					for (int j = 0; j < matchParam_.maxCount + MATCH_CANDIDATE_NUM - 1; j++)
+					for (int j = 0; j < peakBudget; j++)
 					{
 						ptMaxLoc = GetNextMaxLoc(matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size(), dValue, matchParam_.iouThreshold, blockMax);
 						if (dValue < vecLayerScore[iTopLayer])
@@ -913,7 +870,7 @@ namespace template_matching {
 					if (dMaxVal < vecLayerScore[iTopLayer])
 						continue;
 					local.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
-					for (int j = 0; j < matchParam_.maxCount + MATCH_CANDIDATE_NUM - 1; j++)
+					for (int j = 0; j < peakBudget; j++)
 					{
 						ptMaxLoc = GetNextMaxLoc(matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size(), dValue, matchParam_.iouThreshold);
 						if (dValue < vecLayerScore[iTopLayer])
@@ -1009,7 +966,21 @@ namespace template_matching {
 					else
 					{
 						for (int k = -2; k <= 2; k++)
-							vecAngles.push_back(dMatchedAngle + dAngleStep * k);
+						{
+							double a = dMatchedAngle + dAngleStep * k;
+							if (a > matchParam_.angle)
+								a = matchParam_.angle;
+							else if (a < -matchParam_.angle)
+								a = -matchParam_.angle;
+							bool dup = false;
+							for (double prev : vecAngles)
+							{
+								if (std::fabs(prev - a) < 1e-6)
+									dup = true;
+							}
+							if (!dup)
+								vecAngles.push_back(a);
+						}
 					}
 					Point2f ptSrcCenter((vecMatSrcPyr[iLayer].cols - 1) / 2.0f, (vecMatSrcPyr[iLayer].rows - 1) / 2.0f);
 					iSize = (int)vecAngles.size();
@@ -1056,8 +1027,17 @@ namespace template_matching {
 						double dNewX = 0, dNewY = 0, dNewAngle = 0;
 						if (SubPixEsimation(&vecNewMatchParameter, &dNewX, &dNewY, &dNewAngle, dAngleStep, iMaxScoreIndex))
 						{
-							vecNewMatchParameter[iMaxScoreIndex].pt = Point2d(dNewX, dNewY);
-							vecNewMatchParameter[iMaxScoreIndex].dMatchAngle = dNewAngle;
+							// 圆对称目标上角度曲面是平的，二次拟合会把角度甩出搜索范围。
+							// 位置只收 1px 以内的修正，角度必须贴近离散峰并且落在 ±angle 里。
+							const double ox = vecNewMatchParameter[iMaxScoreIndex].pt.x;
+							const double oy = vecNewMatchParameter[iMaxScoreIndex].pt.y;
+							const double oa = vecNewMatchParameter[iMaxScoreIndex].dMatchAngle;
+							if (std::fabs(dNewX - ox) <= 1.0 && std::fabs(dNewY - oy) <= 1.0)
+								vecNewMatchParameter[iMaxScoreIndex].pt = Point2d(dNewX, dNewY);
+							const double angLim = std::max(1.0, dAngleStep * 1.5);
+							if (std::fabs(dNewAngle - oa) <= angLim
+								&& (matchParam_.angle < VISION_TOLERANCE || std::fabs(dNewAngle) <= matchParam_.angle + 1e-3))
+								vecNewMatchParameter[iMaxScoreIndex].dMatchAngle = dNewAngle;
 						}
 					}
 					//次像素估計
@@ -1143,6 +1123,13 @@ namespace template_matching {
 				continue;
 			matchResults.push_back(sstm);
 
+			// 尺度搜索先按 outLimit 放行，match() 里跨尺度去重后再截到 maxCount。
+			const int outLimit = scaleSearch_
+				? std::min(64, std::max(matchParam_.maxCount, 1) * 3 + 6)
+				: std::max(matchParam_.maxCount, 1);
+			if ((int)matchResults.size() >= outLimit)
+				break;
+
 			//std::cout << "x: " << sstm.Center.x << ", y: " << sstm.Center.y << endl;
 
 
@@ -1156,8 +1143,6 @@ namespace template_matching {
 			CString strDiff;strDiff.Format (L"Diff(x, y):%.3f, %.3f", ptCenter.x - sstm.ptCenter.x, ptCenter.y - sstm.ptCenter.y);
 			AfxMessageBox (strDiff);*/
 			//Test Subpixel
-			if (i + 1 == matchParam_.maxCount)
-				break;
 		}
 
 		return (int)matchResults.size();
