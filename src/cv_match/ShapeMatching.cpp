@@ -243,12 +243,15 @@ std::vector<ShapeEdgePt> rotateModel(const std::vector<ShapeEdgePt>& src, double
 }
 
 double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const cv::Mat& ny,
-				 double cx, double cy, bool polarity, double greediness, double minScore)
+				 double cx, double cy, bool polarity, double greediness, double minScore,
+				 bool spatialBalance)
 {
 	const int n = (int)model.size();
 	if (n <= 0)
 		return 0.0;
 	double sum = 0.0;
+	int quadPts[4] = {0, 0, 0, 0};
+	int quadHit[4] = {0, 0, 0, 0};
 	const double need = minScore * n * std::max(0.0, std::min(1.0, greediness));
 	for (int i = 0; i < n; ++i)
 	{
@@ -260,10 +263,37 @@ double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const
 		if (!polarity)
 			d = std::fabs(d);
 		sum += d;
+		if (spatialBalance)
+		{
+			const int q = (model[i].dx >= 0.f ? 1 : 0) + (model[i].dy >= 0.f ? 2 : 0);
+			quadPts[q] += 1;
+			if (d > 0.35)
+				quadHit[q] += 1;
+		}
 		if (sum + (n - i - 1) < need)
 			return sum / n;
 	}
-	return sum / n;
+	const double mean = sum / n;
+	if (!spatialBalance)
+		return mean;
+	// 闭合轮廓（圆点、圆环）四个象限都有点。弧状干扰只贴住一侧，平均分仍可能过阈值。
+	// 只在至少三个象限有点时打折，L 形这类开口轮廓维持原来的平均分。
+	int present = 0;
+	int good = 0;
+	for (int q = 0; q < 4; ++q)
+	{
+		if (quadPts[q] < 3)
+			continue;
+		++present;
+		if (quadHit[q] * 2 >= quadPts[q])
+			++good;
+	}
+	if (present >= 3 && good < present)
+	{
+		const double balance = (double)good / (double)present;
+		return mean * (0.55 + 0.45 * balance);
+	}
+	return mean;
 }
 
 MatchResult packResult(double cx, double cy, double angleDeg, double score, int tw, int th, double objScale)
@@ -286,7 +316,7 @@ MatchResult packResult(double cx, double cy, double angleDeg, double score, int 
 	return r;
 }
 
-void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, double angTol, int maxCount)
+void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCount)
 {
 	std::sort(cands.begin(), cands.end(),
 			  [](const ShapeCandidate& a, const ShapeCandidate& b) { return a.score > b.score; });
@@ -296,12 +326,9 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, double an
 		bool ok = true;
 		for (const auto& k : kept)
 		{
+			// 不看夹角：圆环和圆点在很多角度上分数几乎一样，属于同一个实例。
 			const double d = std::hypot(c.cx - k.cx, c.cy - k.cy);
-			double da = std::fabs(c.angle - k.angle);
-			while (da > 180.0)
-				da -= 360.0;
-			da = std::fabs(da);
-			if (d < minDist && da < angTol)
+			if (d < minDist)
 			{
 				ok = false;
 				break;
@@ -467,7 +494,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				{
 					for (int x = margin; x < pyr[top].cols - margin; x += stride)
 					{
-						const double sc = scorePose(model, nx[top], ny[top], x, y, polarity, greed, coarseTh);
+						const double sc = scorePose(model, nx[top], ny[top], x, y, polarity, greed, coarseTh, false);
 						if (sc < coarseTh)
 							continue;
 						ShapeCandidate c;
@@ -510,7 +537,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				{
 					for (int x = mgn; x < pyr[top].cols - mgn; x += scaleStride)
 					{
-						const double sc = scorePose(model, nx[top], ny[top], x, y, polarity, greed, coarseTh);
+						const double sc = scorePose(model, nx[top], ny[top], x, y, polarity, greed, coarseTh, false);
 						if (sc < coarseTh)
 							continue;
 						ShapeCandidate c;
@@ -531,8 +558,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	}
 
 	const double minDistTop = 0.45 * std::min(tw, th);
-	nmsCandidates(coarse, minDistTop, std::max(angStep * 1.5, 3.0),
-				  std::max(matchParam_.maxCount * 3, matchParam_.maxCount + 5));
+	nmsCandidates(coarse, minDistTop, std::max(matchParam_.maxCount * 4, matchParam_.maxCount + 8));
 
 	std::vector<ShapeCandidate> refined = coarse;
 	for (int layer = top - 1; layer >= stopLayer; --layer)
@@ -555,7 +581,21 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			else
 			{
 				for (int k = -3; k <= 3; ++k)
-					angs.push_back(c0.angle + k * step);
+				{
+					double a = c0.angle + k * step;
+					if (a > matchParam_.angle)
+						a = matchParam_.angle;
+					else if (a < -matchParam_.angle)
+						a = -matchParam_.angle;
+					bool dup = false;
+					for (double prev : angs)
+					{
+						if (std::fabs(prev - a) < 1e-6)
+							dup = true;
+					}
+					if (!dup)
+						angs.push_back(a);
+				}
 			}
 			if (!scaleSearch_)
 			{
@@ -571,7 +611,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 							if (cx < 2 || cy < 2 || cx >= pyr[layer].cols - 2 || cy >= pyr[layer].rows - 2)
 								continue;
 							const double sc = scorePose(model, nx[layer], ny[layer], cx, cy, polarity, greed,
-													   matchParam_.scoreThreshold * 0.6);
+													   matchParam_.scoreThreshold * 0.6, layer == stopLayer);
 							if (sc > bestS)
 							{
 								bestS = sc;
@@ -619,7 +659,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 								if (cx < 2 || cy < 2 || cx >= pyr[layer].cols - 2 || cy >= pyr[layer].rows - 2)
 									continue;
 								const double sc = scorePose(model, nx[layer], ny[layer], cx, cy, polarity, greed,
-														   matchParam_.scoreThreshold * 0.6);
+														   matchParam_.scoreThreshold * 0.6, layer == stopLayer);
 								if (sc > bestS)
 								{
 									bestS = sc;
@@ -638,20 +678,23 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				next.push_back(best);
 		}
 		const double md = 0.45 * std::min(layers_[layer].width, layers_[layer].height);
-		nmsCandidates(next, md, 4.0, matchParam_.maxCount + 4);
+		nmsCandidates(next, md, std::max(matchParam_.maxCount * 3, matchParam_.maxCount + 6));
 		refined.swap(next);
 	}
 
-	nmsCandidates(refined, 0.5 * std::min(templW_, templH_), 4.0, matchParam_.maxCount);
+	nmsCandidates(refined, 0.45 * std::min(templW_, templH_),
+				  std::max(matchParam_.maxCount * 4, matchParam_.maxCount + 8));
 	const int pyrScale = 1 << stopLayer;
+	std::vector<MatchResult> packed;
+	packed.reserve(refined.size());
 	for (const auto& c : refined)
 	{
 		if (c.score < matchParam_.scoreThreshold)
 			continue;
-		matchResults.push_back(packResult(c.cx * pyrScale, c.cy * pyrScale, c.angle, c.score, templW_, templH_, c.scale));
-		if ((int)matchResults.size() >= matchParam_.maxCount)
-			break;
+		packed.push_back(packResult(c.cx * pyrScale, c.cy * pyrScale, c.angle, c.score, templW_, templH_, c.scale));
 	}
+	BaseMatcher::suppressMatchOverlap(packed, matchParam_.iouThreshold, matchParam_.maxCount);
+	matchResults.swap(packed);
 	return (int)matchResults.size();
 }
 

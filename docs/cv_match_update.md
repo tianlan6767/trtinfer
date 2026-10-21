@@ -112,6 +112,7 @@ make -j
 make test-match
 make test-shape
 make test-caliper
+make test-scale
 ```
 
 ## 7. 螺母扁位建议用法
@@ -126,3 +127,27 @@ matcher.setTemplate(templ, mask)
 ```
 
 角度仍建议用卡尺复核；NCC 负责把 ROI 放到螺母附近。
+
+## 8. 多实例 + 尺度，向 Halcon Matching 例图靠拢（2026-10-21）
+
+对照是 Halcon 官方 Matching 例图（`green_dots`、`rings_02/03/04`、`board_01`，以及已经对齐的 `face_mask` / `cap_exposure`）。这些图是 MVTec 版权，**不放进仓库**，CI 里用合成图复现同样的失败模式，见 `tests/test_scale_match.cpp` 里 `testGreenDotsMultiScale` / `testRingsNoAngleDuplicates` / `testRingClutterNotDuplicated` / `testBoardPoseUnchanged` / `testPatternBrightnessLikeExposure`。`board_02` 在 ±10° 下 Halcon 和这里都会漏，不在这次范围里。
+
+改之前，在合成的对应场景上：
+
+| 场景 | 改之前 | 改之后 |
+|---|---|---|
+| 三个不同尺度的圆点，角度 ±12°，`maxCount=8` | PATTERN 7～8（3 个真目标 + 错尺度错位影子，角度能到 ±14° 以外）；SHAPE 8（同一中心多个角度） | 两边都是 3，每个中心一个，角度留在搜索范围内 |
+| SHAPE `maxCount=3` | 角度重复占掉名额，最弱的那个圆点被挤掉 | 3 个中心都在 |
+| 4 个圆环，SHAPE 角度 ±15° 且带一点尺度 | 16 个高分重复 | 4 |
+| 1 个圆环 + 两段弧 | SHAPE 9（真圆环的多个角度 + 弧上的误检） | 1，落在真圆环上 |
+| 单个非对称板、整体加亮的 NCC | 本来就对 | 仍是 1 个命中 |
+
+做法：
+
+- **SHAPE** 去重不再要求夹角也接近。圆和环在一串角度上分数几乎一样，以前 `d < minDist && da < angTol` 会把它们都留下。
+- 跨尺度合并（PATTERN）和 SHAPE 最终输出走同一个 `suppressMatchOverlap`：中心距 < 0.4×较小边，或较小框被盖住的比例 > `iouThreshold`（`<=0` 时按 0.5）。单尺度 PATTERN 原来的 `FilterWithRotatedRect` 没改，避免动到不做尺度搜索的 NCC。
+- 尺度搜索时每个尺度先按更大的候选额度输出，合并去重后再截到 `maxCount`。
+- PATTERN 的角度网格改成含端点的 `±angle`。亚像素角度甩出范围就丢掉，只用位置修正。
+- SHAPE 在最细一层对「至少三个象限都有边缘点」的闭合轮廓做象限覆盖打折。半圈弧不再靠平均分过线。开口轮廓（L 形）不打折。
+
+`make test-scale` 不需要 TensorRT。Windows 上按 [env_windows.md](env_windows.md) 用 CMake 重编 `cvter` 后，再跑原来的 Halcon 对照脚本。没有单独的图像路径要配：官方例图不在 CI 里。

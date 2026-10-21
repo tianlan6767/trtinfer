@@ -170,4 +170,83 @@ namespace template_matching
 		const std::vector<double> scales = sampleMatchScales(param);
 		return !(scales.size() == 1 && std::fabs(scales[0] - 1.0) < kScaleIdentityEps);
 	}
+
+	namespace
+	{
+		double matchBoxSide(const MatchResult& r)
+		{
+			const double w = std::hypot(r.RightTop.x - r.LeftTop.x, r.RightTop.y - r.LeftTop.y);
+			const double h = std::hypot(r.LeftBottom.x - r.LeftTop.x, r.LeftBottom.y - r.LeftTop.y);
+			return std::max(1.0, std::min(w, h));
+		}
+
+		// 较小框被另一个框盖住的比例。完全包含时为 1。
+		double smallerCoveredFraction(const MatchResult& a, const MatchResult& b)
+		{
+			std::vector<cv::Point2f> pa{
+				cv::Point2f((float)a.LeftTop.x, (float)a.LeftTop.y),
+				cv::Point2f((float)a.RightTop.x, (float)a.RightTop.y),
+				cv::Point2f((float)a.RightBottom.x, (float)a.RightBottom.y),
+				cv::Point2f((float)a.LeftBottom.x, (float)a.LeftBottom.y)};
+			std::vector<cv::Point2f> pb{
+				cv::Point2f((float)b.LeftTop.x, (float)b.LeftTop.y),
+				cv::Point2f((float)b.RightTop.x, (float)b.RightTop.y),
+				cv::Point2f((float)b.RightBottom.x, (float)b.RightBottom.y),
+				cv::Point2f((float)b.LeftBottom.x, (float)b.LeftBottom.y)};
+			if (pa.size() < 3 || pb.size() < 3)
+				return 0.0;
+			const cv::RotatedRect ra = cv::minAreaRect(pa);
+			const cv::RotatedRect rb = cv::minAreaRect(pb);
+			const double areaA = std::max(1.0, (double)ra.size.area());
+			const double areaB = std::max(1.0, (double)rb.size.area());
+			std::vector<cv::Point2f> inter;
+			const int typ = cv::rotatedRectangleIntersection(ra, rb, inter);
+			if (typ == cv::INTERSECT_NONE)
+				return 0.0;
+			double interArea = 0.0;
+			if (typ == cv::INTERSECT_FULL)
+				interArea = std::min(areaA, areaB);
+			else if (inter.size() >= 3)
+			{
+				std::vector<cv::Point2f> hull;
+				cv::convexHull(inter, hull, true);
+				interArea = std::max(0.0, cv::contourArea(hull));
+			}
+			return interArea / std::min(areaA, areaB);
+		}
+	}
+
+	void BaseMatcher::suppressMatchOverlap(std::vector<MatchResult>& results, double iouThreshold, int maxCount)
+	{
+		if (maxCount < 1)
+			maxCount = 1;
+		std::sort(results.begin(), results.end(), [](const MatchResult& a, const MatchResult& b) {
+			return a.Score > b.Score;
+		});
+		// 中心落在较小目标内部，就是同一实例的另一个角度或相邻尺度，跟夹角无关。
+		const double centerFrac = 0.40;
+		const double coverThr = iouThreshold > 0.0 ? iouThreshold : 0.5;
+		std::vector<MatchResult> kept;
+		kept.reserve(std::min((int)results.size(), maxCount));
+		for (const MatchResult& cand : results)
+		{
+			bool drop = false;
+			for (const MatchResult& prev : kept)
+			{
+				const double dist = std::hypot(cand.Center.x - prev.Center.x, cand.Center.y - prev.Center.y);
+				const double minSide = std::min(matchBoxSide(cand), matchBoxSide(prev));
+				if (dist < centerFrac * minSide || smallerCoveredFraction(cand, prev) > coverThr)
+				{
+					drop = true;
+					break;
+				}
+			}
+			if (drop)
+				continue;
+			kept.push_back(cand);
+			if ((int)kept.size() >= maxCount)
+				break;
+		}
+		results.swap(kept);
+	}
 }
