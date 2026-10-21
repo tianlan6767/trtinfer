@@ -206,3 +206,46 @@ matcher.setTemplate(templ, mask)
 - PATTERN `rings_03` 留下那颗大约 0.79 的整圈，假命中去掉，个数为 1。`rings_04` 从 4 收到 3。`rings_02` 的 PATTERN 保持 4。
 - SHAPE `rings_03` 仍是 1，`rings_04` 仍是 3。`rings_02` 仍可能是 3。
 - PATTERN `green_dots` 变成 3，SHAPE `green_dots` 变成 3。若第三颗的全局 NCC 在粗层仍低于大约 0.22，补救碰不到它。`cap_exposure` 的 SHAPE 仍可以是 0。
+
+## 12. 对比度双阈值，以及 #15 把 SHAPE 乘小了（2026-10-21）
+
+第 11 节之后再对官方例图：`cap_exposure_01` 的 PATTERN 仍是 0。`rings_03` 的真命中大约 0.79 回来了，0.50 的假命中还在，个数是 2。`rings_04` 的 PATTERN 仍是 4，SHAPE 从 3 掉到 2。`green_dots` 的 PATTERN 仍是 2，SHAPE 从 4 掉到 2。`board_01`、`face_mask`、`cap_exposure_03/05`、`rings_02` 不变。
+
+另一组带边缘 mask 的托盘：归一化梯度工具大约 11 个，完整件接近 1，缺一边的大约 0.57–0.60。这里 SHAPE 在 `edgeMinMag=29` 时大约 3 个，比改幅值权重之前 `edgeMinMag=119` 的 6 个还少。官方图和这组托盘都不进仓库。
+
+合成图上对得上的原因：
+
+- 最细一层把场景梯度除以 `2.5×edgeMinMag`。对比度设到几十或 100 以上时，正常边缘的幅值也低于这个门，分数被乘小。残缺件、较弱的圆环和绿点会掉到 0.5 下面。弱纹理只要压到一个固定的低门槛就够，不能跟着对比度一起抬。
+- 只按强度取前 `maxEdgePoints` 个点时，孔和高光把名额占满，框会漂到孔上，外轮廓上的残缺也看不见。按角度绕着轮廓轮流取，孔和外形都还在。
+- 贪心从前往后打分。残缺的那一段如果排在最前，后面明明还能过 0.5，也会被提前丢掉。点按角度交错之后，缺一段仍然给出大约 0.5 以上的分。
+- 欠曝瓶盖可以有两块象限被压平（标准差接近 0），一半象限「坏掉」的规则会把整颗删掉。实心目标只要还有两块象限在 0.75 以上、最好的一块在 0.85 以上，就留下。
+- 细环上刚过 0.5 的命中，除非整圈边缘都在，否则丢掉。大约 0.79 的整圈留着。
+
+做法：
+
+- `MatcherParam.edgeContrast`：对比度。`edgeMinMag` 是最小对比度。`edgeContrast` 高于 `edgeMinMag` 时，弱边缘要连到强种子上才进模型。`0` 或不超过 `edgeMinMag` 时仍是单阈值。Python 字段同名。
+- 幅值权重的门槛改成 `min(32, max(8, 2.5×edgeMinMag))`。同尺度圆环的 0.4 倍中心距不动，`scoreThreshold` 不降。
+- 顶层步长最大 4 像素，最细一层位置搜索从 ±3 放到 ±4，残缺件的框更靠近真中心。
+- 实心目标的「一半象限坏掉」在上面说的条件下不再删。细环分数低于 0.62 且边缘不是整圈，删掉；大约 60° 以上的缺口且分数低于 0.75、最差象限边缘又弱，也删。
+
+`make test-scale` 增加 `testShapeTrayMaskAndChip`、`testShapeHighContrastStillFinds`、`testPatternCrushedHalfCapKept`、`testPatternFaintRingArcDropped`。Windows 上按 [env_windows.md](env_windows.md) 重编 pytrad 后跑原来的 Halcon 对照，托盘那组把 `edgeMinMag` 设成最小对比度、`edgeContrast` 设成对比度（例如 29 和 119）。没有新的图像路径。希望：
+
+- PATTERN `cap_exposure_01` 回到 1。`cap_exposure_03/05`、`board_01`、`face_mask` 不变。
+- PATTERN `rings_03` 只留大约 0.79 的那颗。`rings_04` 的 SHAPE 回到 3。PATTERN `rings_04` 若多出来的弧分数低于大约 0.75 且缺边，会少一个；更高分的残弧这次仍可能留着。`rings_02` 的 SHAPE 仍可能是 3。
+- SHAPE `green_dots` 回到 3，不再把真点乘到阈值下。PATTERN 仍可能是 2。
+- 托盘 SHAPE+mask、定尺度、分数阈值 0.5：完整件高分，缺一边的能过 0.5，框落在零件上。不要为了凑个数把 `scoreThreshold` 降到 0.5 以下。
+
+## 13. 顶层 16 档方向（2026-10-21）
+
+多实例加边缘 mask 时，只加强浮点边缘筛选还不够：孔和高光会占满点数，步长一稀，缺一段的零件在顶层就进不了精修。公开实现里同一类做法是把方向收成离散档，再用夹角余弦做粗搜（[shape_based_matching](https://github.com/meiqua/shape_based_matching) 的 16 档和相似度表，Issue #10 里把表解释成各方向夹角余弦，并把方向扩散到邻域；[edge_match](https://github.com/SurfaceMan/edge_match) 用余弦查表和亚像素边缘）。没有把 FDCM 当主路径，也没有拷贝这些仓库的表或 SIMD 代码。
+
+`MatcherParam.oriBins`（`CoarseRefineParam` 同名字段）：
+
+- `0`（默认）：全程仍是单位法向点积。已对齐的圆环、绿点、单板不走新路径。
+- `16`：学模板时沿法向把边缘点挪到亚像素幅值峰上（最多半像素）。顶层把方向收成 16 档，每个模型点在 ±2 像素里取夹角余弦的最大值；极性开着时反方向记 0，关掉时用绝对值。步长不超过 2。下面各层和最后分数仍是浮点余弦，`scoreThreshold` 的尺度不变。
+
+合成托盘（边缘 mask、内部孔、左侧缺大约 70°）在 `oriBins=16`、`edgeMinMag=22`、`edgeContrast=80`、阈值 0.5 下 6 个都在零件上：完整件大约 0.95，缺边的大约 0.84，旁边的孔不锁。对比度设到 100 时分数大约 0.78，不再被 `2.5×edgeMinMag` 乘到 0.5 下面。
+
+细环假峰：边缘像素要不少于非背景像素的一半才当细环。大空白里的实心小圆以前会被 0.62 的细环门槛删掉，现在非背景像素在至少三个象限对齐、没有角度缺口、边缘对齐不低于 0.78 时，仍走原来的补救。欠曝瓶盖右半被压平时 PATTERN 仍留下 1 个，中心会往还剩结构的一侧偏。
+
+Windows 上按 [env_windows.md](env_windows.md) 重编后，托盘把 `edgeMinMag` 设成最小对比度、`edgeContrast` 设成对比度，并设 `oriBins=16`。第 12 节的 Halcon 对照希望不变：`cap_exposure_01` 的 PATTERN 回到 1，`rings_03` 只留大约 0.79 的那颗，`rings_04` 的 SHAPE 回到 3，`green_dots` 的 SHAPE 回到 3。PATTERN `green_dots` 仍可能是 2，PATTERN `rings_04` 的多出来的弧若分数到 0.75 以上仍可能留着，`rings_02` 的 SHAPE 仍可能是 3。不要把 `scoreThreshold` 降到 0.5 以下。

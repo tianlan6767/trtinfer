@@ -120,8 +120,155 @@ inline float sample32(const cv::Mat& m, float x, float y)
 		   (1.f - dx) * dy * v01 + dx * dy * v11;
 }
 
-bool extractEdges(const cv::Mat& gray, const cv::Mat& mask8, double minMag, int maxPts,
-				  std::vector<ShapeEdgePt>& edges)
+// 梯度方向收成 16 档（每档 22.5°）。粗搜用余弦表，不把整段 LineMod 响应图搬进来。
+int oriBin16(float nx, float ny)
+{
+	if (nx * nx + ny * ny < 1e-8f)
+		return -1;
+	double ang = std::atan2((double)ny, (double)nx);
+	if (ang < 0.0)
+		ang += 2.0 * kPi;
+	int b = (int)(ang * (16.0 / (2.0 * kPi)));
+	if (b < 0)
+		b = 0;
+	if (b >= 16)
+		b = 0;
+	return b;
+}
+
+struct OriCos16
+{
+	float pol[16][16];
+	float any[16][16];
+	OriCos16()
+	{
+		for (int i = 0; i < 16; ++i)
+		{
+			for (int j = 0; j < 16; ++j)
+			{
+				int d = std::abs(i - j);
+				if (d > 8)
+					d = 16 - d;
+				const float c = (float)std::cos(d * (kPi / 8.0));
+				pol[i][j] = c > 0.f ? c : 0.f;
+				any[i][j] = std::fabs(c);
+			}
+		}
+	}
+};
+
+const OriCos16& oriCos16()
+{
+	static const OriCos16 table;
+	return table;
+}
+
+void buildOri16(const cv::Mat& nx, const cv::Mat& ny, const cv::Mat& mag, float floorMag, cv::Mat& ori)
+{
+	ori.create(nx.size(), CV_8U);
+	for (int y = 0; y < nx.rows; ++y)
+	{
+		const float* pnx = nx.ptr<float>(y);
+		const float* pny = ny.ptr<float>(y);
+		const float* pm = mag.ptr<float>(y);
+		uchar* po = ori.ptr<uchar>(y);
+		for (int x = 0; x < nx.cols; ++x)
+		{
+			if (pm[x] < floorMag)
+			{
+				po[x] = 255;
+				continue;
+			}
+			const int b = oriBin16(pnx[x], pny[x]);
+			po[x] = b < 0 ? (uchar)255 : (uchar)b;
+		}
+	}
+}
+
+struct EdgeCand
+{
+	float dx = 0.f;
+	float dy = 0.f;
+	float nx = 0.f;
+	float ny = 0.f;
+	float mag = 0.f;
+	int bin = 0;
+};
+
+// 按角度轮流取点，避免强边缘（孔、高光）占满 maxEdgePoints，也避免残缺的那一段排在打分最前面被贪心提前丢掉。
+void spreadEdgePoints(std::vector<EdgeCand>& cand, int maxPts, std::vector<ShapeEdgePt>& edges)
+{
+	const int bins = 16;
+	std::vector<std::vector<int>> byBin(bins);
+	for (int i = 0; i < (int)cand.size(); ++i)
+		byBin[cand[i].bin].push_back(i);
+	for (auto& b : byBin)
+	{
+		std::sort(b.begin(), b.end(), [&](int a, int c) { return cand[a].mag > cand[c].mag; });
+	}
+	std::vector<int> cursor(bins, 0);
+	std::vector<ShapeEdgePt> picked;
+	picked.reserve(std::min(maxPts > 0 ? maxPts : (int)cand.size(), (int)cand.size()));
+	const float minDist2 = 2.5f * 2.5f;
+	const int limit = maxPts > 0 ? maxPts : (int)cand.size();
+	bool progressed = true;
+	while ((int)picked.size() < limit && progressed)
+	{
+		progressed = false;
+		for (int b = 0; b < bins && (int)picked.size() < limit; ++b)
+		{
+			while (cursor[b] < (int)byBin[b].size())
+			{
+				const EdgeCand& e = cand[byBin[b][cursor[b]]];
+				++cursor[b];
+				bool ok = true;
+				for (const auto& p : picked)
+				{
+					const float ddx = e.dx - p.dx, ddy = e.dy - p.dy;
+					if (ddx * ddx + ddy * ddy < minDist2)
+					{
+						ok = false;
+						break;
+					}
+				}
+				if (!ok)
+					continue;
+				ShapeEdgePt pt;
+				pt.dx = e.dx;
+				pt.dy = e.dy;
+				pt.nx = e.nx;
+				pt.ny = e.ny;
+				picked.push_back(pt);
+				progressed = true;
+				break;
+			}
+		}
+	}
+	edges.swap(picked);
+}
+
+// 沿法向对梯度幅值做抛物线插值，边缘点最多挪半个像素。只在 16 档路径上用。
+void nudgeSubpixel(EdgeCand& e, const cv::Mat& mag, float cx, float cy)
+{
+	const float x = e.dx + cx;
+	const float y = e.dy + cy;
+	const float m0 = sample32(mag, x, y);
+	const float mm = sample32(mag, x - e.nx, y - e.ny);
+	const float mp = sample32(mag, x + e.nx, y + e.ny);
+	const float denom = mm - 2.f * m0 + mp;
+	if (std::fabs(denom) < 1e-3f)
+		return;
+	float delta = 0.5f * (mm - mp) / denom;
+	if (delta > 0.5f)
+		delta = 0.5f;
+	else if (delta < -0.5f)
+		delta = -0.5f;
+	e.dx += delta * e.nx;
+	e.dy += delta * e.ny;
+}
+
+bool extractEdges(const cv::Mat& gray, const cv::Mat& mask8, double minMag, double highMag, int maxPts,
+				  std::vector<ShapeEdgePt>& edges, bool subpixel)
 {
 	edges.clear();
 	if (gray.empty())
@@ -142,11 +289,15 @@ bool extractEdges(const cv::Mat& gray, const cv::Mat& mask8, double minMag, int 
 		}
 	}
 
-	const float th = (float)minMag;
+	const float low = (float)minMag;
+	float high = (float)highMag;
+	if (!(high > low))
+		high = low;
 	const float cx = (gray.cols - 1) * 0.5f;
 	const float cy = (gray.rows - 1) * 0.5f;
-	std::vector<ShapeEdgePt> cand;
+	std::vector<EdgeCand> cand;
 	cand.reserve(256);
+	cv::Mat seed(gray.size(), CV_8U, cv::Scalar(0));
 	for (int y = 1; y < gray.rows - 1; ++y)
 	{
 		const float* pm = mag.ptr<float>(y);
@@ -157,59 +308,84 @@ bool extractEdges(const cv::Mat& gray, const cv::Mat& mask8, double minMag, int 
 		for (int x = 1; x < gray.cols - 1; ++x)
 		{
 			const float m = pm[x];
-			if (m < th)
+			if (m < low)
 				continue;
 			if (m < pm[x - 1] || m < pm[x + 1] || m < pup[x] || m < pdn[x])
 				continue;
-			ShapeEdgePt e;
+			EdgeCand e;
 			e.dx = (float)x - cx;
 			e.dy = (float)y - cy;
 			e.nx = pnx[x];
 			e.ny = pny[x];
+			e.mag = m;
+			double ang = std::atan2((double)e.dy, (double)e.dx);
+			if (ang < 0.0)
+				ang += 2.0 * kPi;
+			e.bin = std::min(15, (int)(ang / (2.0 * kPi) * 16.0));
 			cand.push_back(e);
+			if (m >= high)
+				seed.at<uchar>(y, x) = 255;
 		}
 	}
-	if ((int)cand.size() > maxPts && maxPts > 0)
+	// 双阈值：弱边缘只有连到强种子上才留下。单阈值时 high==low，种子就是全部候选。
+	if (high > low + 0.5f && !cand.empty())
 	{
-		std::vector<std::pair<float, int>> magIdx;
-		magIdx.reserve(cand.size());
-		for (int i = 0; i < (int)cand.size(); ++i)
+		cv::Mat alive = seed.clone();
+		for (int step = 0; step < 5; ++step)
 		{
-			const int ix = (int)std::lround(cand[i].dx + cx);
-			const int iy = (int)std::lround(cand[i].dy + cy);
-			float mm = 0.f;
-			if (ix >= 0 && iy >= 0 && ix < mag.cols && iy < mag.rows)
-				mm = mag.at<float>(iy, ix);
-			magIdx.push_back({mm, i});
-		}
-		std::sort(magIdx.begin(), magIdx.end(),
-				  [](const auto& a, const auto& b) { return a.first > b.first; });
-		std::vector<ShapeEdgePt> picked;
-		picked.reserve(maxPts);
-		const float minDist2 = 2.5f * 2.5f;
-		for (const auto& it : magIdx)
-		{
-			const ShapeEdgePt& e = cand[it.second];
-			bool ok = true;
-			for (const auto& p : picked)
+			cv::Mat grown;
+			cv::dilate(alive, grown, cv::Mat());
+			bool any = false;
+			for (int y = 1; y < gray.rows - 1; ++y)
 			{
-				const float ddx = e.dx - p.dx, ddy = e.dy - p.dy;
-				if (ddx * ddx + ddy * ddy < minDist2)
+				uchar* pa = alive.ptr<uchar>(y);
+				const uchar* pg = grown.ptr<uchar>(y);
+				const float* pm = mag.ptr<float>(y);
+				for (int x = 1; x < gray.cols - 1; ++x)
 				{
-					ok = false;
-					break;
+					if (pa[x] || !pg[x] || pm[x] < low)
+						continue;
+					pa[x] = 255;
+					any = true;
 				}
 			}
-			if (!ok)
-				continue;
-			picked.push_back(e);
-			if ((int)picked.size() >= maxPts)
+			if (!any)
 				break;
 		}
-		edges.swap(picked);
+		std::vector<EdgeCand> linked;
+		linked.reserve(cand.size());
+		for (const auto& e : cand)
+		{
+			const int x = (int)std::lround(e.dx + cx);
+			const int y = (int)std::lround(e.dy + cy);
+			if (x < 0 || y < 0 || x >= alive.cols || y >= alive.rows)
+				continue;
+			if (alive.at<uchar>(y, x))
+				linked.push_back(e);
+		}
+		cand.swap(linked);
 	}
-	else
-		edges.swap(cand);
+	else if (!cand.empty())
+	{
+		// 单阈值时丢掉远弱于最强边缘的点，避免径向灰阶或纹理把轮廓分数拉低。
+		float peak = 0.f;
+		for (const auto& e : cand)
+			peak = std::max(peak, e.mag);
+		const float rel = std::max(low, 0.45f * peak);
+		std::vector<EdgeCand> strong;
+		strong.reserve(cand.size());
+		for (const auto& e : cand)
+			if (e.mag >= rel)
+				strong.push_back(e);
+		if (strong.size() >= 12)
+			cand.swap(strong);
+	}
+	if (subpixel)
+	{
+		for (auto& e : cand)
+			nudgeSubpixel(e, mag, cx, cy);
+	}
+	spreadEdgePoints(cand, maxPts, edges);
 	return edges.size() >= 12;
 }
 
@@ -253,8 +429,8 @@ double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const
 	int quadPts[4] = {0, 0, 0, 0};
 	int quadHit[4] = {0, 0, 0, 0};
 	const double need = minScore * n * std::max(0.0, std::min(1.0, greediness));
-	// 单位法向不看边缘有多强，花纹上的弱梯度也能凑出 0.6。幅值低于大约 2.5 倍门槛的点少算。
-	const float magGate = std::max(8.f, 2.5f * minMag);
+	// 只压很弱的纹理。门槛封顶，不随 edgeMinMag 抬到 119 那种对比度，否则正常边缘和残缺件会被乘到 0.5 下面。
+	const float magGate = std::min(32.f, std::max(8.f, 2.5f * minMag));
 	for (int i = 0; i < n; ++i)
 	{
 		const float px = (float)(cx + model[i].dx);
@@ -299,6 +475,58 @@ double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const
 		return mean * (0.55 + 0.45 * balance);
 	}
 	return mean;
+}
+
+// 顶层粗搜：每个模型点在 ±spread 里取方向余弦的最大值，等价于响应图上的一次查表。
+// 极性打开时反方向记 0；关掉时用绝对值。末层精修不走这里。
+double scorePoseQuant(const std::vector<ShapeEdgePt>& model, const cv::Mat& ori, double cx, double cy,
+					  bool polarity, double greediness, double minScore, int spread)
+{
+	const int n = (int)model.size();
+	if (n <= 0 || ori.empty())
+		return 0.0;
+	const OriCos16& table = oriCos16();
+	std::vector<int> label(n);
+	for (int i = 0; i < n; ++i)
+		label[i] = oriBin16(model[i].nx, model[i].ny);
+	double sum = 0.0;
+	const double need = minScore * n * std::max(0.0, std::min(1.0, greediness));
+	const int sp = std::max(0, spread);
+	const int w = ori.cols;
+	const int h = ori.rows;
+	for (int i = 0; i < n; ++i)
+	{
+		float best = 0.f;
+		const int ml = label[i];
+		if (ml >= 0)
+		{
+			const int px = (int)std::lround(cx + model[i].dx);
+			const int py = (int)std::lround(cy + model[i].dy);
+			for (int oy = -sp; oy <= sp; ++oy)
+			{
+				const int y = py + oy;
+				if ((unsigned)y >= (unsigned)h)
+					continue;
+				const uchar* row = ori.ptr<uchar>(y);
+				for (int ox = -sp; ox <= sp; ++ox)
+				{
+					const int x = px + ox;
+					if ((unsigned)x >= (unsigned)w)
+						continue;
+					const int sl = row[x];
+					if (sl > 15)
+						continue;
+					const float s = polarity ? table.pol[ml][sl] : table.any[ml][sl];
+					if (s > best)
+						best = s;
+				}
+			}
+		}
+		sum += (double)best;
+		if (sum + (n - i - 1) < need)
+			return sum / n;
+	}
+	return sum / n;
 }
 
 MatchResult packResult(double cx, double cy, double angleDeg, double score, int tw, int th, double objScale)
@@ -408,6 +636,7 @@ int ShapeMatcher::setTemplate(const cv::Mat& templateImage, const cv::Mat& mask)
 
 	layers_.resize(pyr.size());
 	double mag = matchParam_.edgeMinMag;
+	double contrast = matchParam_.edgeContrast;
 	for (int i = 0; i < (int)pyr.size(); ++i)
 	{
 		layers_[i].width = pyr[i].cols;
@@ -415,7 +644,11 @@ int ShapeMatcher::setTemplate(const cv::Mat& templateImage, const cv::Mat& mask)
 		const cv::Mat& msk = maskPyr.empty() ? cv::Mat() : maskPyr[i];
 		double layerMag = mag / std::pow(1.6, i);  // 上层更糊，阈值略降
 		layerMag = std::max(8.0, layerMag);
-		if (!extractEdges(pyr[i], msk, layerMag, matchParam_.maxEdgePoints, layers_[i].edges))
+		double layerHigh = contrast > mag ? contrast / std::pow(1.6, i) : layerMag;
+		if (layerHigh < layerMag)
+			layerHigh = layerMag;
+		const bool subpixel = matchParam_.oriBins == 16;
+		if (!extractEdges(pyr[i], msk, layerMag, layerHigh, matchParam_.maxEdgePoints, layers_[i].edges, subpixel))
 		{
 			if (i == 0)
 				return -4;
@@ -457,6 +690,10 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	std::vector<cv::Mat> nx(pyr.size()), ny(pyr.size()), mag(pyr.size());
 	for (int i = 0; i < (int)pyr.size(); ++i)
 		computeUnitGrad(pyr[i], nx[i], ny[i], mag[i]);
+	const bool quantCoarse = matchParam_.oriBins == 16;
+	cv::Mat oriTop;
+	if (quantCoarse)
+		buildOri16(nx[top], ny[top], mag[top], 6.f, oriTop);
 
 	const ShapeLayer& topModel = layers_[top];
 	double angStep = angleStepDeg(topModel.edges);
@@ -480,7 +717,12 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	const float maxR = modelRadius(topModel.edges);
 	int margin = (int)std::ceil(maxR) + 1;
 	margin = std::min(margin, std::max(1, std::min(pyr[top].rows, pyr[top].cols) / 4));
-	const int stride = std::max(1, std::min(tw, th) / 8);
+	int stride = std::max(1, std::min(tw, th) / 8);
+	if (stride > 4)
+		stride = 4;
+	// 16 档粗搜的邻域是 ±2。步长收到 2，精修 ±4 才盖得住斜向漏格。
+	if (quantCoarse && stride > 2)
+		stride = 2;
 	const double coarseTh = matchParam_.scoreThreshold * 0.72;
 	const bool polarity = matchParam_.usePolarity;
 	const double greed = matchParam_.greediness;
@@ -499,7 +741,9 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				{
 					for (int x = margin; x < pyr[top].cols - margin; x += stride)
 					{
-						const double sc = scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag, x, y, polarity, greed, coarseTh, false);
+						const double sc = quantCoarse
+							? scorePoseQuant(model, oriTop, x, y, polarity, greed, coarseTh, 2)
+							: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag, x, y, polarity, greed, coarseTh, false);
 						if (sc < coarseTh)
 							continue;
 						ShapeCandidate c;
@@ -519,7 +763,11 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	}
 	else
 	{
-		const int scaleStride = std::max(1, std::min(tw, th) / 12);
+		int scaleStride = std::max(1, std::min(tw, th) / 12);
+		if (scaleStride > 4)
+			scaleStride = 4;
+		if (quantCoarse && scaleStride > 2)
+			scaleStride = 2;
 		std::vector<std::pair<int, int>> jobs;
 		jobs.reserve(angles.size() * scales_.size());
 		for (int ai = 0; ai < (int)angles.size(); ++ai)
@@ -542,7 +790,9 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				{
 					for (int x = mgn; x < pyr[top].cols - mgn; x += scaleStride)
 					{
-						const double sc = scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag, x, y, polarity, greed, coarseTh, false);
+						const double sc = quantCoarse
+							? scorePoseQuant(model, oriTop, x, y, polarity, greed, coarseTh, 2)
+							: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag, x, y, polarity, greed, coarseTh, false);
 						if (sc < coarseTh)
 							continue;
 						ShapeCandidate c;
@@ -562,7 +812,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		}
 	}
 
-	const double minDistTop = 0.45 * std::min(tw, th);
+	const double topSpan = std::min((double)std::min(tw, th), 2.0 * (double)maxR);
+	const double minDistTop = 0.45 * std::max(4.0, topSpan);
 	nmsCandidates(coarse, minDistTop, std::max(matchParam_.maxCount * 4, matchParam_.maxCount + 8));
 
 	std::vector<ShapeCandidate> refined = coarse;
@@ -579,7 +830,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			ShapeCandidate best = c0;
 			best.cx = cx0;
 			best.cy = cy0;
-			const int rad = 3;
+			const int rad = 4;
 			std::vector<double> angs;
 			if (matchParam_.angle < 1e-6)
 				angs.push_back(0.0);
@@ -684,12 +935,16 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			if (best.score >= matchParam_.scoreThreshold * (layer == stopLayer ? 1.0 : 0.65))
 				next.push_back(best);
 		}
-		const double md = 0.45 * std::min(layers_[layer].width, layers_[layer].height);
+		const double layerSpan = std::min((double)std::min(layers_[layer].width, layers_[layer].height),
+										  2.0 * (double)modelRadius(mdl.edges));
+		const double md = 0.45 * std::max(4.0, layerSpan);
 		nmsCandidates(next, md, std::max(matchParam_.maxCount * 3, matchParam_.maxCount + 6));
 		refined.swap(next);
 	}
 
-	nmsCandidates(refined, 0.45 * std::min(templW_, templH_),
+	const double fullSpan = std::min((double)std::min(layers_[stopLayer].width, layers_[stopLayer].height),
+									 2.0 * (double)modelRadius(layers_[stopLayer].edges));
+	nmsCandidates(refined, 0.45 * std::max(4.0, fullSpan),
 				  std::max(matchParam_.maxCount * 4, matchParam_.maxCount + 8));
 	const int pyrScale = 1 << stopLayer;
 	std::vector<MatchResult> packed;

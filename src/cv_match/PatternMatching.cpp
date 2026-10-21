@@ -102,6 +102,7 @@ namespace template_matching {
 			double best = 0.0;
 			double infoNcc = -1.0;
 			int infoQuads = 0;
+			int strong = 0;
 			// 细环（笔画只占模板一小圈）。实心瓶盖、脸、圆点不是。
 			bool thin = false;
 			double edgeAgree = -1.0;
@@ -171,6 +172,8 @@ namespace template_matching {
 					const double q = nccOf(templ(roi), aligned(roi));
 					qncc[qn++] = q;
 					++out.present;
+					if (sceneStd[0] >= 3.0 && q >= 0.75)
+						++out.strong;
 					if (sceneStd[0] < 3.0 || q < 0.35)
 						++out.bad;
 				}
@@ -328,7 +331,10 @@ namespace template_matching {
 					out.gapBins = bestGap;
 				}
 				// 实心目标（瓶盖、脸、圆点）笔画占比高，不按环的缺口删。
-				out.thin = infoCount >= 80 && infoFrac >= 0.04 && infoFrac <= 0.34 && activeBins >= 8 && en >= 48;
+				// 细环的对比几乎都在边缘上（边缘像素不少于非背景的一半）。
+				// 大空白里的实心小圆，边缘只占物体大约三到四成，不能算细环。
+				out.thin = infoCount >= 80 && infoFrac >= 0.04 && infoFrac <= 0.34 && activeBins >= 8 && en >= 48
+					&& en * 2 >= infoCount;
 			}
 			out.valid = true;
 			return out;
@@ -341,7 +347,12 @@ namespace template_matching {
 			if (!q.valid)
 				return false;
 			if (q.present >= 3 && q.bad * 2 >= q.present)
+			{
+				// 实心目标还有两块象限对得很齐：欠曝把另外两块压平，不是残弧。
+				if (!q.thin && q.strong >= 2 && q.best >= 0.85)
+					return false;
 				return true;
+			}
 			if (!q.thin)
 				return false;
 			if (q.gapBins >= 3)
@@ -368,6 +379,16 @@ namespace template_matching {
 					continue;
 				// 细环上边缘对上的比例很低、全局分又不高：错位或大半圈缺失，不是高光整圈。
 				if (q.thin && q.edgeAgree >= 0.0 && q.edgeAgree < 0.58 && hit.Score < 0.82)
+					continue;
+				// 刚过 0.5 的细环，除非整圈边缘都在，否则是 0.50 那档假峰。高光整圈分数更高，不走这里。
+				// 大空白边上的实心物体全局分也会掉到 0.5 附近，但非背景像素在各象限都对齐，要留给下面的补救。
+				const bool objectAligned = q.infoQuads >= 3 && q.infoNcc + 1e-9 >= scoreThreshold && q.gapBins == 0
+					&& q.edgeAgree >= 0.78;
+				if (q.thin && hit.Score < 0.62
+					&& !(q.edgeAgree >= 0.90 && q.gapBins == 0 && q.worstEdge >= 0.75)
+					&& !objectAligned)
+					continue;
+				if (q.thin && q.gapBins >= 2 && q.worstEdge < 0.55 && hit.Score < 0.75)
 					continue;
 				if (hit.Score + 1e-9 >= scoreThreshold)
 				{

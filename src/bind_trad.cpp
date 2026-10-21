@@ -166,9 +166,11 @@ void bindTrad(py::module_& m)
         .def_readwrite("meanBorder", &template_matching::MatcherParam::meanBorder)
         .def_readwrite("stopLayer", &template_matching::MatcherParam::stopLayer)
         .def_readwrite("edgeMinMag", &template_matching::MatcherParam::edgeMinMag)
+        .def_readwrite("edgeContrast", &template_matching::MatcherParam::edgeContrast)
         .def_readwrite("maxEdgePoints", &template_matching::MatcherParam::maxEdgePoints)
         .def_readwrite("usePolarity", &template_matching::MatcherParam::usePolarity)
         .def_readwrite("greediness", &template_matching::MatcherParam::greediness)
+        .def_readwrite("oriBins", &template_matching::MatcherParam::oriBins)
         .def_readwrite("minScale", &template_matching::MatcherParam::minScale)
         .def_readwrite("maxScale", &template_matching::MatcherParam::maxScale)
         .def_readwrite("scaleStep", &template_matching::MatcherParam::scaleStep)
@@ -184,9 +186,11 @@ void bindTrad(py::module_& m)
                 << ", meanBorder: " << (param.meanBorder ? "true" : "false")
                 << ", stopLayer: " << param.stopLayer
                 << ", edgeMinMag: " << param.edgeMinMag
+                << ", edgeContrast: " << param.edgeContrast
                 << ", maxEdgePoints: " << param.maxEdgePoints
                 << ", usePolarity: " << (param.usePolarity ? "true" : "false")
                 << ", greediness: " << param.greediness
+                << ", oriBins: " << param.oriBins
                 << ", minScale: " << param.minScale
                 << ", maxScale: " << param.maxScale
                 << ", scaleStep: " << param.scaleStep

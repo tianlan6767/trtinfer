@@ -9,7 +9,7 @@ make test-blob
 make test-caliper
 make test-rect
 make test-measure
-make test-scale   # 只编 cv_match。尺度，多实例圆点，细环缺口，高光整圈，欠曝瓶盖，花纹误锁，单板，加亮 NCC
+make test-scale   # 只编 cv_match。尺度，托盘 mask（16 档方向），细环缺口，欠曝瓶盖，高对比度形状，单板，加亮 NCC
 make test-match
 make test-shape
 make test-golden
