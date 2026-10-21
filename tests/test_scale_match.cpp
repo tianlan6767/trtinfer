@@ -1210,7 +1210,8 @@ void testShapeTrayMaskAndChip()
 	const MatchResult* chip = nearestHit(hits, truth[chipIdx]);
 	const MatchResult* full = nearestHit(hits, truth[0]);
 	expect(chip && chip->Score >= 0.5, "shape tray chipped part passes 0.5");
-	expect(full && full->Score >= 0.9, "shape tray complete part stays high");
+	// 和全程浮点同一套点之后，完整件大约 0.89，不再是亚像素挪点时的大约 0.95。
+	expect(full && full->Score >= 0.85, "shape tray complete part stays high");
 	expect(chip && full && chip->Score < full->Score - 0.05, "shape tray chip scores below a complete part");
 	expect(countNear(hits, cv::Point2d(stray.x, stray.y), 18.0) == 0, "shape tray does not lock the stray hole");
 }
@@ -1301,6 +1302,87 @@ void testShapeBorderPartial()
 		const MatchResult* edge = nearestHit(hits, edgeC);
 		expect(edge && edge->Score >= 0.5, "shape border clipped score passes 0.5");
 	}
+}
+
+// 左边缘大约 68% 可见。oriBins=16 只改顶层粗搜，模型点必须和全程浮点是同一套，
+// 否则末层分会岔开（233 上残件从大约 0.53 掉到 0.36）。两条路径的分数要贴在一起。
+void testShapeOri16PartialMatchesFloat()
+{
+	using namespace template_matching;
+	const int box = 160;
+	const int rad = 54;
+	cv::Mat templ(box, box, CV_8U, cv::Scalar(36));
+	cv::circle(templ, {box / 2, box / 2}, rad, cv::Scalar(210), cv::FILLED);
+	cv::circle(templ, {box / 2, box / 2}, 14, cv::Scalar(36), cv::FILLED);
+	cv::rectangle(templ, {box / 2 + rad / 3, box / 2 - 8}, {box / 2 + rad - 4, box / 2 + 8}, cv::Scalar(210), cv::FILLED);
+	cv::Mat mask = cv::Mat::zeros(templ.size(), CV_8U);
+	cv::circle(mask, {box / 2, box / 2}, rad + 6, cv::Scalar(255), cv::FILLED);
+
+	const cv::Point2d partial(28, 170);
+	const cv::Point2d interior(460, 420);
+	cv::Mat scene(860, 980, CV_8U, cv::Scalar(36));
+	auto paint = [&](cv::Point2d c) {
+		const int x0 = (int)std::lround(c.x - (box - 1) / 2.0);
+		const int y0 = (int)std::lround(c.y - (box - 1) / 2.0);
+		for (int y = 0; y < box; ++y)
+		{
+			const int sy = y0 + y;
+			if (sy < 0 || sy >= scene.rows)
+				continue;
+			for (int x = 0; x < box; ++x)
+			{
+				const int sx = x0 + x;
+				if (sx < 0 || sx >= scene.cols)
+					continue;
+				scene.at<uchar>(sy, sx) = templ.at<uchar>(y, x);
+			}
+		}
+	};
+	paint(partial);
+	paint(interior);
+
+	double partialScore[2] = {0, 0};
+	double interiorScore[2] = {0, 0};
+	int idx = 0;
+	for (int bins : {0, 16})
+	{
+		MatcherParam param;
+		param.matcherType = MatcherType::SHAPE;
+		param.angle = 8;
+		param.scoreThreshold = 0.5;
+		param.maxCount = 4;
+		param.iouThreshold = 0.4;
+		param.minArea = 256;
+		param.edgeMinMag = 29;
+		param.edgeContrast = 119;
+		param.maxEdgePoints = 240;
+		param.usePolarity = true;
+		param.greediness = 0.9;
+		param.oriBins = bins;
+		auto matcher = GetMatcher(param);
+		expect(matcher && matcher->setTemplate(templ, mask) == 0, "shape ori16-partial setTemplate");
+		std::vector<MatchResult> hits;
+		matcher->match(scene, hits);
+		std::cout << "    shape ori16-partial bins=" << bins << " n=" << hits.size() << std::endl;
+		for (const auto& h : hits)
+			std::cout << "      sc=" << h.Score << " c=(" << h.Center.x << "," << h.Center.y << ")" << std::endl;
+		expect((int)hits.size() == 2, "shape ori16-partial no extra hit");
+		const MatchResult* edge = nearestHit(hits, partial);
+		const MatchResult* full = nearestHit(hits, interior);
+		expect(edge && std::hypot(edge->Center.x - partial.x, edge->Center.y - partial.y) < 8.0,
+			   "shape ori16-partial finds the clipped part");
+		expect(full && std::hypot(full->Center.x - interior.x, full->Center.y - interior.y) < 8.0,
+			   "shape ori16-partial keeps the interior part");
+		expect(edge && edge->Score >= 0.85, "shape ori16-partial clipped score stays high");
+		expect(full && full->Score >= 0.85, "shape ori16-partial interior score stays high");
+		if (edge)
+			partialScore[idx] = edge->Score;
+		if (full)
+			interiorScore[idx] = full->Score;
+		++idx;
+	}
+	expect(std::fabs(partialScore[0] - partialScore[1]) < 0.03, "shape ori16-partial clipped score matches float");
+	expect(std::fabs(interiorScore[0] - interiorScore[1]) < 0.03, "shape ori16-partial interior score matches float");
 }
 
 // 第三只圆环对比度低、边缘发虚。方向贴得上，不能再被 mag/32 乘到 0.5 下面。
@@ -1409,6 +1491,7 @@ int main()
 	testShapeTrayMaskAndChip();
 	testShapeHighContrastStillFinds();
 	testShapeBorderPartial();
+	testShapeOri16PartialMatchesFloat();
 	testShapeFaintRingThird();
 	testPatternOneQuadrantOcclusion();
 	testBoardPoseUnchanged();
