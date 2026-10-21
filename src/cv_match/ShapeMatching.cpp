@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 #include <omp.h>
 #include <opencv2/imgproc.hpp>
 
@@ -769,16 +770,43 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCo
 	};
 	std::vector<Acc> kept;
 	kept.reserve(std::min((int)cands.size(), std::max(maxCount, 1)));
+	// 格子边长等于去重半径。严格小于 minDist 的种子一定落在周围 3×3 里。
+	// 名额放到几千之后，逐个和全部已留种子比会把纹理图的去重拖回秒级。
+	const double cell = std::max(minDist, 1e-6);
+	struct CellKey
+	{
+		int x;
+		int y;
+		bool operator==(const CellKey& o) const { return x == o.x && y == o.y; }
+	};
+	struct CellHash
+	{
+		size_t operator()(const CellKey& k) const
+		{
+			return (std::hash<int>{}(k.x) * 1315423911u) ^ std::hash<int>{}(k.y);
+		}
+	};
+	std::unordered_map<CellKey, std::vector<int>, CellHash> grid;
 	for (const auto& c : cands)
 	{
 		int match = -1;
-		for (int i = 0; i < (int)kept.size(); ++i)
+		const int ix = (int)std::floor(c.cx / cell);
+		const int iy = (int)std::floor(c.cy / cell);
+		for (int oy = -1; oy <= 1; ++oy)
 		{
-			// 用种子位置，不用挪过的质心，避免两个挨着的实例被收成一个。
-			if (std::hypot(c.cx - kept[i].seedX, c.cy - kept[i].seedY) < minDist)
+			for (int ox = -1; ox <= 1; ++ox)
 			{
-				match = i;
-				break;
+				const auto it = grid.find(CellKey{ix + ox, iy + oy});
+				if (it == grid.end())
+					continue;
+				for (int id : it->second)
+				{
+					// 用种子位置，不用挪过的质心，避免两个挨着的实例被收成一个。
+					// 两点都小于半径时留更早的那个，和按名次线性扫一致。
+					if (std::hypot(c.cx - kept[id].seedX, c.cy - kept[id].seedY) < minDist &&
+						(match < 0 || id < match))
+						match = id;
+				}
 			}
 		}
 		if (match >= 0)
@@ -818,6 +846,7 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCo
 		a.w = 1;
 		a.angC = std::cos(c.angle * kD2R);
 		a.angS = std::sin(c.angle * kD2R);
+		grid[CellKey{ix, iy}].push_back((int)kept.size());
 		kept.push_back(a);
 	}
 	cands.clear();
@@ -855,7 +884,7 @@ void nmsKeepOrigins(std::vector<ShapeCandidate>& cands, double minDist, int maxC
 // 现在改成浮点分会把它们排到纹理假峰后面。贴边种子本来就对准了，不再挪。
 void snapInteriorFloat(std::vector<ShapeCandidate>& cands, const std::vector<ShapeEdgePt>& edges, const cv::Mat& nx,
 					   const cv::Mat& ny, const cv::Mat& mag, float minMag, bool polarity, double greed,
-					   bool scaleSearch)
+					   double minScore, bool scaleSearch)
 {
 	const int n = (int)cands.size();
 	const int cols = nx.cols;
@@ -879,8 +908,8 @@ void snapInteriorFloat(std::vector<ShapeCandidate>& cands, const std::vector<Sha
 				const double cy = cands[i].cy + dy;
 				if (cx < 0.0 || cy < 0.0 || cx > cols - 1 || cy > rows - 1)
 					continue;
-				// minScore=0：贪心早停返回的是没算完的平均，不能拿来选位置。
-				const double sc = scorePose(model, nx, ny, mag, minMag, cx, cy, polarity, greed, 0.0, false);
+				// 早停返回的是没算完的平均，只可能更低，不会盖过算完的真峰。
+				const double sc = scorePose(model, nx, ny, mag, minMag, cx, cy, polarity, greed, minScore, false);
 				if (sc > bestS)
 				{
 					bestS = sc;
@@ -1152,7 +1181,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		const double plateau = std::min(minDistTop, kPlateauDist);
 		nmsKeepOrigins(coarse, plateau, plateauKeepCount(matchParam_.maxCount), true, plateau);
 		snapInteriorFloat(coarse, topModel.edges, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag, polarity,
-						  greed, scaleSearch_);
+						  greed, coarseTh, scaleSearch_);
 	}
 	else
 		nmsCandidates(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, false), false);
