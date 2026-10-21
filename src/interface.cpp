@@ -195,6 +195,8 @@ PYBIND11_MODULE(cvter, m){
         .value("YOLO11POSESAHI", ModelType::YOLO11POSESAHI)
         .value("YOLO11SEGSAHI", ModelType::YOLO11SEGSAHI)
         .value("YOLO11OBBSAHI", ModelType::YOLO11OBBSAHI)
+        .value("DFINE", ModelType::DFINE)
+        .value("DFINESAHI", ModelType::DFINESAHI)
         .value("CLS", ModelType::CLS)
         .value("UVIAD", ModelType::UVIAD)
         .value("DEEPLABV3", ModelType::DEEPLABV3)

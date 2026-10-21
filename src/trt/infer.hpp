@@ -91,6 +91,8 @@ inline ModelType from_string(const std::string &str)
                                                                         {"YOLO11SEGSAHI", ModelType::YOLO11SEGSAHI},
                                                                         {"YOLO11OBB", ModelType::YOLO11OBB},
                                                                         {"YOLO11OBBSAHI", ModelType::YOLO11OBBSAHI},
+                                                                        {"DFINE", ModelType::DFINE},
+                                                                        {"DFINESAHI", ModelType::DFINESAHI},
                                                                         {"CLS", ModelType::CLS},
                                                                         {"UVIAD", ModelType::UVIAD},
                                                                         {"DEEPLABV3", ModelType::DEEPLABV3},
