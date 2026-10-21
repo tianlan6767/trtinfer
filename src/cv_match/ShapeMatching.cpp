@@ -243,8 +243,8 @@ std::vector<ShapeEdgePt> rotateModel(const std::vector<ShapeEdgePt>& src, double
 }
 
 double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const cv::Mat& ny,
-				 double cx, double cy, bool polarity, double greediness, double minScore,
-				 bool spatialBalance)
+				 const cv::Mat& mag, float minMag, double cx, double cy, bool polarity, double greediness,
+				 double minScore, bool spatialBalance)
 {
 	const int n = (int)model.size();
 	if (n <= 0)
@@ -253,15 +253,20 @@ double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const
 	int quadPts[4] = {0, 0, 0, 0};
 	int quadHit[4] = {0, 0, 0, 0};
 	const double need = minScore * n * std::max(0.0, std::min(1.0, greediness));
+	// 单位法向不看边缘有多强，花纹上的弱梯度也能凑出 0.6。幅值低于大约 2.5 倍门槛的点少算。
+	const float magGate = std::max(8.f, 2.5f * minMag);
 	for (int i = 0; i < n; ++i)
 	{
 		const float px = (float)(cx + model[i].dx);
 		const float py = (float)(cy + model[i].dy);
 		const float inx = sample32(nx, px, py);
 		const float iny = sample32(ny, px, py);
+		const float sm = spatialBalance ? sample32(mag, px, py) : magGate;
+		const float w = std::min(1.f, sm / magGate);
 		double d = model[i].nx * inx + model[i].ny * iny;
 		if (!polarity)
 			d = std::fabs(d);
+		d *= (double)w;
 		sum += d;
 		if (spatialBalance)
 		{
@@ -494,7 +499,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				{
 					for (int x = margin; x < pyr[top].cols - margin; x += stride)
 					{
-						const double sc = scorePose(model, nx[top], ny[top], x, y, polarity, greed, coarseTh, false);
+						const double sc = scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag, x, y, polarity, greed, coarseTh, false);
 						if (sc < coarseTh)
 							continue;
 						ShapeCandidate c;
@@ -537,7 +542,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				{
 					for (int x = mgn; x < pyr[top].cols - mgn; x += scaleStride)
 					{
-						const double sc = scorePose(model, nx[top], ny[top], x, y, polarity, greed, coarseTh, false);
+						const double sc = scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag, x, y, polarity, greed, coarseTh, false);
 						if (sc < coarseTh)
 							continue;
 						ShapeCandidate c;
@@ -610,7 +615,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 							const double cy = cy0 + dy;
 							if (cx < 2 || cy < 2 || cx >= pyr[layer].cols - 2 || cy >= pyr[layer].rows - 2)
 								continue;
-							const double sc = scorePose(model, nx[layer], ny[layer], cx, cy, polarity, greed,
+							const double sc = scorePose(model, nx[layer], ny[layer], mag[layer], (float)matchParam_.edgeMinMag,
+													   cx, cy, polarity, greed,
 													   matchParam_.scoreThreshold * 0.6, layer == stopLayer);
 							if (sc > bestS)
 							{
@@ -658,7 +664,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 								const double cy = cy0 + dy;
 								if (cx < 2 || cy < 2 || cx >= pyr[layer].cols - 2 || cy >= pyr[layer].rows - 2)
 									continue;
-								const double sc = scorePose(model, nx[layer], ny[layer], cx, cy, polarity, greed,
+								const double sc = scorePose(model, nx[layer], ny[layer], mag[layer], (float)matchParam_.edgeMinMag,
+														   cx, cy, polarity, greed,
 														   matchParam_.scoreThreshold * 0.6, layer == stopLayer);
 								if (sc > bestS)
 								{

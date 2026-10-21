@@ -58,7 +58,7 @@ hits = m.match(gray)
 | `angle` / `minArea` / `scoreThreshold` / `maxCount` / `stopLayer` | 同 NCC | 金字塔与搜索范围 |
 | `minScale` / `maxScale` / `scaleStep` / `numScales` | 同 NCC | 尺度网格；默认只搜 1 |
 
-分数是所有模型点上 `n_model · n_image` 的平均（单位法向点积），约等于方向余弦。1 为完全一致。闭合轮廓在最细一层还会按象限覆盖打折，半圈对齐的分数会掉下去。`Angle` 与 OpenCV `getRotationMatrix2D` 相同：图像坐标 y 向下，正角为画面逆时针。`Scale` 是相对模板的尺度，四角按该尺度放大。
+分数是所有模型点上 `n_model · n_image` 的平均（单位法向点积），约等于方向余弦。1 为完全一致。最细一层还会按场景梯度幅值打折：幅值低于大约 2.5 倍 `edgeMinMag` 的点少算，避免花纹上的弱梯度锁成一个圆。闭合轮廓在最细一层再按象限覆盖打折，半圈对齐的分数会掉下去。`Angle` 与 OpenCV `getRotationMatrix2D` 相同：图像坐标 y 向下，正角为画面逆时针。`Scale` 是相对模板的尺度，四角按该尺度放大。
 
 ## 算法摘要
 

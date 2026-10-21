@@ -102,6 +102,13 @@ namespace template_matching {
 			double best = 0.0;
 			double infoNcc = -1.0;
 			int infoQuads = 0;
+			// 细环（笔画只占模板一小圈）。实心瓶盖、脸、圆点不是。
+			bool thin = false;
+			double edgeAgree = -1.0;
+			double worstEdge = 1.0;
+			double secondEdge = 1.0;
+			int edgePresent = 0;
+			int gapBins = 0;
 		};
 
 		AlignedQuads alignQuads(const Mat& sceneIn, const Mat& templIn, const Mat& maskIn, const MatchResult& hit)
@@ -224,21 +231,122 @@ namespace template_matching {
 						}
 					}
 				}
+
+				// 细环看边缘还在不在，不看灰度相关。高光会把一个象限的 NCC 拉到 0.6，
+				// 但圆环边缘还在；缺一口时那一段模板边缘落在平背景上。
+				Mat tdx, tdy, sdx, sdy;
+				Sobel(templ, tdx, CV_32F, 1, 0, 3);
+				Sobel(templ, tdy, CV_32F, 0, 1, 3);
+				Sobel(aligned, sdx, CV_32F, 1, 0, 3);
+				Sobel(aligned, sdy, CV_32F, 0, 1, 3);
+				const int bins = 12;
+				int binN[12] = {}, binHit[12] = {};
+				int qN[4] = {}, qHit[4] = {};
+				int agree = 0, en = 0;
+				const double cx = (W - 1) * 0.5;
+				const double cy = (H - 1) * 0.5;
+				for (int y = 1; y < H - 1; ++y)
+				{
+					const float* gx = tdx.ptr<float>(y);
+					const float* gy = tdy.ptr<float>(y);
+					const float* sx = sdx.ptr<float>(y);
+					const float* sy = sdy.ptr<float>(y);
+					for (int x = 1; x < W - 1; ++x)
+					{
+						const float tm = std::hypot(gx[x], gy[x]);
+						if (tm < 40.f)
+							continue;
+						++en;
+						const int q = (x >= W / 2 ? 1 : 0) + (y >= H / 2 ? 2 : 0);
+						++qN[q];
+						const float sm = std::hypot(sx[x], sy[x]);
+						const float dot = gx[x] * sx[x] + gy[x] * sy[x];
+						const bool hitEdge = sm > 18.f && dot > 0.45f * tm * sm;
+						if (hitEdge)
+						{
+							++agree;
+							++qHit[q];
+						}
+						double ang = std::atan2((double)y - cy, (double)x - cx);
+						if (ang < 0.0)
+							ang += 2.0 * CV_PI;
+						int b = (int)(ang / (2.0 * CV_PI) * bins);
+						if (b < 0)
+							b = 0;
+						if (b >= bins)
+							b = bins - 1;
+						++binN[b];
+						if (hitEdge)
+							++binHit[b];
+					}
+				}
+				const double infoFrac = (double)infoCount / (double)(W * H);
+				int activeBins = 0;
+				bool active[12] = {};
+				bool matched[12] = {};
+				if (en >= 48)
+				{
+					out.edgeAgree = (double)agree / (double)en;
+					double eqs[4];
+					int ec = 0;
+					for (int i = 0; i < 4; ++i)
+					{
+						if (qN[i] < 12)
+							continue;
+						eqs[ec++] = (double)qHit[i] / (double)qN[i];
+					}
+					if (ec > 0)
+					{
+						std::sort(eqs, eqs + ec);
+						out.edgePresent = ec;
+						out.worstEdge = eqs[0];
+						out.secondEdge = ec >= 2 ? eqs[1] : eqs[0];
+					}
+					for (int i = 0; i < bins; ++i)
+					{
+						if (binN[i] < 4)
+							continue;
+						active[i] = true;
+						++activeBins;
+						if (binHit[i] * 2 >= binN[i])
+							matched[i] = true;
+					}
+					int gap = 0;
+					int bestGap = 0;
+					for (int i = 0; i < bins * 2; ++i)
+					{
+						const int b = i % bins;
+						if (active[b] && !matched[b])
+						{
+							++gap;
+							if (gap > bestGap)
+								bestGap = gap;
+						}
+						else
+							gap = 0;
+					}
+					out.gapBins = bestGap;
+				}
+				// 实心目标（瓶盖、脸、圆点）笔画占比高，不按环的缺口删。
+				out.thin = infoCount >= 80 && infoFrac >= 0.04 && infoFrac <= 0.34 && activeBins >= 8 && en >= 48;
 			}
 			out.valid = true;
 			return out;
 		}
 
-		// 缺一口的弧：只有一个象限偏弱（大约 0.25–0.70），其余象限仍然高。
-		// 整圈四个象限接近。只挡死一个象限时，那个象限接近 0，不在这个区间里。
-		// 旁边另一颗点落进空白边时，往往有两个象限一起变差，次差也低，这里不删。
+		// 一半象限几乎不相关：残弧。细环再看边缘缺口。
+		// 不用「一个象限的灰度 NCC 落在 0.22–0.72」：整圈上的高光、欠曝瓶盖的一块噪声都会长这样。
 		bool partialFromQuads(const AlignedQuads& q)
 		{
 			if (!q.valid)
 				return false;
 			if (q.present >= 3 && q.bad * 2 >= q.present)
 				return true;
-			if (q.present >= 3 && q.worst >= 0.22 && q.worst < 0.72 && q.second >= 0.70 && (q.best - q.worst) > 0.28)
+			if (!q.thin)
+				return false;
+			if (q.gapBins >= 3)
+				return true;
+			if (q.edgePresent >= 3 && q.worstEdge < 0.42 && q.secondEdge >= 0.70)
 				return true;
 			return false;
 		}
@@ -257,6 +365,9 @@ namespace template_matching {
 					continue;
 				AlignedQuads q = alignQuads(scene, templ, mask, hit);
 				if (partialFromQuads(q))
+					continue;
+				// 细环上边缘对上的比例很低、全局分又不高：错位或大半圈缺失，不是高光整圈。
+				if (q.thin && q.edgeAgree >= 0.0 && q.edgeAgree < 0.58 && hit.Score < 0.82)
 					continue;
 				if (hit.Score + 1e-9 >= scoreThreshold)
 				{
@@ -1120,17 +1231,21 @@ namespace template_matching {
 
 				MatchTemplate(matRotatedSrc, pTemplData, matResult, iTopLayer, false);
 
+				// 尺度搜索时顶层门槛放低，弱的较小实例才进得了精搜。最终仍按 scoreThreshold 或非背景补救取舍。
+				const double topGate = scaleSearch_
+					? std::min(vecLayerScore[iTopLayer], std::max(0.22, matchParam_.scoreThreshold * 0.42))
+					: vecLayerScore[iTopLayer];
 				if (bCalMaxByBlock)
 				{
 					s_BlockMax blockMax(matResult, pTemplData->vecPyramid[iTopLayer].size());
 					blockMax.GetMaxValueLoc(dMaxVal, ptMaxLoc);
-					if (dMaxVal < vecLayerScore[iTopLayer])
+					if (dMaxVal < topGate)
 						continue;
 					local.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
 					for (int j = 0; j < peakBudget; j++)
 					{
 						ptMaxLoc = GetNextMaxLoc(matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size(), dValue, matchParam_.iouThreshold, blockMax);
-						if (dValue < vecLayerScore[iTopLayer])
+						if (dValue < topGate)
 							break;
 						local.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
 					}
@@ -1138,13 +1253,13 @@ namespace template_matching {
 				else
 				{
 					minMaxLoc(matResult, 0, &dMaxVal, 0, &ptMaxLoc);
-					if (dMaxVal < vecLayerScore[iTopLayer])
+					if (dMaxVal < topGate)
 						continue;
 					local.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
 					for (int j = 0; j < peakBudget; j++)
 					{
 						ptMaxLoc = GetNextMaxLoc(matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size(), dValue, matchParam_.iouThreshold);
-						if (dValue < vecLayerScore[iTopLayer])
+						if (dValue < topGate)
 							break;
 						local.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
 					}
@@ -1287,9 +1402,12 @@ namespace template_matching {
 						//次像素估計
 					}
 					// 最细一层放到略低于阈值，好让「空白边对不上、物体本身对齐」的弱实例活到后面的补救。
+					// 尺度搜索的中间层同样放低，避免弱实例在粗层就被 0.9^k 门槛丢掉。
 					const double layerGate = (iLayer == iStopLayer)
 						? std::max(0.30, matchParam_.scoreThreshold * 0.82)
-						: vecLayerScore[iLayer];
+						: (scaleSearch_
+							? std::min(vecLayerScore[iLayer], std::max(0.26, matchParam_.scoreThreshold * 0.50))
+							: vecLayerScore[iLayer]);
 					if (vecNewMatchParameter[iMaxScoreIndex].dMatchScore < layerGate)
 						break;
 					//次像素估計

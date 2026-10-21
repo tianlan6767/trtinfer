@@ -181,3 +181,28 @@ matcher.setTemplate(templ, mask)
 - SHAPE 去掉贴在高分命中旁边的低分锁：中心距小于较小边的 0.65 倍，且分数低于 0.78、又不到对方的 0.74 倍。两个高分圆环不进这条。`rings_02` 少的那一个不对着这条放宽，避免把已经对齐的 `rings_03/04` 又放回去。
 
 `make test-scale` 增加 `testPatternWeakThirdOnNoise`、`testPatternAlmostRingRejected`、`testShapeDotSidelobeDropped`。Windows 上再按 [env_windows.md](env_windows.md) 用 CMake 重编后跑原来的 Halcon 对照。希望 PATTERN 的 `green_dots` 变成 3，`rings_03/04` 再各少 1；SHAPE 的 `green_dots` 变成 3。SHAPE 的 `rings_03/04` 保持 1 和 3，`rings_02` 仍可能是 3。PATTERN 的 `board_01` / `face_mask` / `cap_exposure` 个数和分数应不变。
+
+## 11. 高光整圈被当成缺口，以及欠曝瓶盖（2026-10-21）
+
+第 10 节之后再对官方例图：PATTERN `rings_03` 个数收到 1，但留下的是大约 0.50 的假命中，原先大约 0.79 的整圈被「一个象限灰度偏弱」删掉了。`rings_04` 仍是 4（Halcon 3）。`green_dots` 的 PATTERN 仍是 2、SHAPE 仍是 4。`cap_exposure_01` 的 PATTERN 从 1 掉到 0；`cap_exposure_03/05` 还在。`board_01`、`face_mask` 不变。SHAPE `rings_02` 仍是 3，这是第 8 节就少的，这次仍不放宽 0.4 倍中心距。
+
+合成图上对得上的原因：
+
+- 整圈某一侧加一块高光，全局分大约 0.85，最差象限的灰度 NCC 大约 0.65，其余象限接近 1。旧规则把它当成缺一口。边缘在四个象限都还在。
+- 缺口大约 110°–180° 的弧，最差象限的灰度 NCC 可以接近 0，不落在 0.22–0.72 里，所以旧规则留着，分数大约 0.66–0.80。把命中拧回模板后，这一段边缘对不上，角度上能连成 90° 以上的缺口。
+- 瓶盖整体变暗，再把一个象限混进噪声。全局分仍高于 0.5，但那个象限的灰度 NCC 落进旧区间，唯一的命中被删掉。瓶盖是实心的，笔画占比高，不走细环的缺口规则。
+- SHAPE 的分数原先只用单位法向。花纹上的弱梯度方向凑巧对齐时，也能到 0.6，而且离真圆点够远，0.65 倍边长的旁瓣规则碰不到。最细一层按场景梯度幅值打折之后，这种锁掉到阈值下；真圆点的边缘幅值很高，三个还在。
+
+做法：
+
+- 去掉「一个象限灰度 NCC 在 0.22–0.72、次差仍高」这条。一半象限几乎不相关的，仍丢掉。
+- 只对细环（非背景像素大约占 4%–34%，并且边缘绕中心至少铺满 8 个 30° 扇区）检查缺口：连续对不上的扇区达到 3 个（约 90°），或一个象限边缘对齐低于 0.42 且其余象限仍高，就丢掉。边缘对齐比例低于 0.58 且全局分低于 0.82 的细环命中也丢掉。高光整圈留着。
+- 尺度搜索的金字塔粗层门槛放到大约 `0.42×scoreThreshold`，弱的较小实例能进精搜。最后仍按阈值，或按第 10 节的非背景像素补救。
+- SHAPE 最细一层把梯度幅值低于大约 `2.5×edgeMinMag` 的点按比例少算。同尺度圆环的 0.4 倍中心距不动。
+
+`make test-scale` 增加 `testPatternExposureQuadrantKept`、`testPatternSpecularRingDropsOpenArc`、`testShapeMottleLockDropped`。Windows 上按 [env_windows.md](env_windows.md) 用 VS2019 + CMake 重编 pytrad，再跑原来的 Halcon 对照。没有新的图像路径。希望：
+
+- PATTERN `cap_exposure_01` 回到 1。`cap_exposure_03/05`、`board_01`、`face_mask` 的 PATTERN 不变。
+- PATTERN `rings_03` 留下那颗大约 0.79 的整圈，假命中去掉，个数为 1。`rings_04` 从 4 收到 3。`rings_02` 的 PATTERN 保持 4。
+- SHAPE `rings_03` 仍是 1，`rings_04` 仍是 3。`rings_02` 仍可能是 3。
+- PATTERN `green_dots` 变成 3，SHAPE `green_dots` 变成 3。若第三颗的全局 NCC 在粗层仍低于大约 0.22，补救碰不到它。`cap_exposure` 的 SHAPE 仍可以是 0。
