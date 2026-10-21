@@ -1495,6 +1495,20 @@ void testShapeOri16ResponseMapWideAngle()
 		const double d25 = std::min(std::fabs(turned->Angle - 25.0), std::fabs(turned->Angle + 25.0));
 		expect(d25 <= 8.0, "shape ori16-map rotated angle near ±25");
 	}
+	// 粗搜按角度下标拼回、去重按全序比较。再跑一次，命中个数和位姿必须一样。
+	std::vector<MatchResult> again;
+	matcher->match(scene, again);
+	expect((int)again.size() == (int)hits.size(), "shape ori16-map repeat keeps the same count");
+	if (again.size() == hits.size())
+	{
+		for (size_t i = 0; i < hits.size(); ++i)
+		{
+			expect(std::fabs(again[i].Score - hits[i].Score) < 1e-9, "shape ori16-map repeat score");
+			expect(std::hypot(again[i].Center.x - hits[i].Center.x, again[i].Center.y - hits[i].Center.y) < 1e-6,
+				   "shape ori16-map repeat center");
+			expect(std::fabs(again[i].Angle - hits[i].Angle) < 1e-6, "shape ori16-map repeat angle");
+		}
+	}
 }
 
 // 步长 4、±180° 之后仍要留下转过的件和贴左边的件。

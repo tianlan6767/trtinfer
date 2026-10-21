@@ -255,14 +255,14 @@ void buildOri16(const cv::Mat& nx, const cv::Mat& ny, const cv::Mat& mag, float 
 constexpr int kMapSpread = 3;
 constexpr int kMapStride = 4;
 
-// 粗搜进精修的名额。不能比步长加倍之前更紧：maxCount=200 时旧名额是 800，
-// 收到 400 会在纹理图上把贴边弱分挤掉。oriBins=16 再垫一个下限。
+// 末层和 oriBins=0 粗搜的名额。不能比步长加倍之前更紧：maxCount=200 时旧名额是 800。
+// oriBins=16 的粗搜改走 plateauKeepCount；这里的下限用在精修之后的末层去重。
 int coarseKeepCount(int maxCount, bool quant)
 {
 	const int loose = std::max(maxCount * 4, maxCount + 8);
 	if (!quant)
 		return loose;
-	return std::max(loose, 128);
+	return std::max(loose, 1024);
 }
 
 int refineKeepCount(int maxCount, bool quant)
@@ -270,7 +270,18 @@ int refineKeepCount(int maxCount, bool quant)
 	const int loose = std::max(maxCount * 3, maxCount + 6);
 	if (!quant)
 		return loose;
-	return std::max(loose, 96);
+	// 第一层精修之后假峰还没全部掉下去。名额太紧会把刚找回角度的弱真峰截掉。
+	return std::max(loose, 1536);
+}
+
+// 先只把同一片平台收成一个种子。半径小于整幅去重（大约 16px），
+// 8～16px 外的另一个峰先留着，等浮点分出来再决定留谁。
+constexpr double kPlateauDist = 8.0;
+constexpr int kSnapRadius = 2;
+
+int plateauKeepCount(int maxCount)
+{
+	return std::max(coarseKeepCount(maxCount, true) * 4, 4096);
 }
 struct OriResponse16
 {
@@ -721,10 +732,29 @@ MatchResult packResult(double cx, double cy, double angleDeg, double score, int 
 	return r;
 }
 
-void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCount, bool blendTies = false)
+// 分数相同就按位置、角度、尺度排死。std::sort 不稳定，OpenMP 合并顺序一变，
+// 平台上谁当种子就跟着变，去重个数会在 9 和 10 之间跳。
+bool candidatePrecedes(const ShapeCandidate& a, const ShapeCandidate& b)
 {
-	std::sort(cands.begin(), cands.end(),
-			  [](const ShapeCandidate& a, const ShapeCandidate& b) { return a.score > b.score; });
+	if (a.score != b.score)
+		return a.score > b.score;
+	if (a.cy != b.cy)
+		return a.cy < b.cy;
+	if (a.cx != b.cx)
+		return a.cx < b.cx;
+	if (a.angle != b.angle)
+		return a.angle < b.angle;
+	if (a.scale != b.scale)
+		return a.scale < b.scale;
+	if (a.fromBorder != b.fromBorder)
+		return !a.fromBorder && b.fromBorder;
+	return false;
+}
+
+void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCount, bool blendTies = false,
+				   double blendRadius = 1e9)
+{
+	std::sort(cands.begin(), cands.end(), candidatePrecedes);
 	// 响应图把分数铺平之后，同一实例上很多格点都是 1。只留排序第一个会停在平台边缘，
 	// 精修窗口够不着真中心。同分的邻居收成质心，角度用圆周平均。
 	struct Acc
@@ -757,7 +787,10 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCo
 			// 响应图把一片格点都抬到同一分上，最高的那一格经常在平台边上。
 			// 几乎同分的邻居一起算质心。角度只平均离种子约一步的，
 			// 避免把另一侧的高分角度卷进圆周平均。
-			if (blendTies && c.score >= a.c.score - 1e-4)
+			// 只把平台内部的同分邻居收成质心。更远的高分格点仍按去重丢掉，
+			// 但不拉质心，避免两个挨着的实例被收到中间、两边都对不上。
+			if (blendTies && c.score >= a.c.score - 1e-4 &&
+				std::hypot(c.cx - a.seedX, c.cy - a.seedY) <= blendRadius)
 			{
 				const double w = a.w;
 				a.c.cx = (a.c.cx * w + c.cx) / (w + 1.0);
@@ -795,7 +828,8 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCo
 
 // 贴边种子和内部种子分开去重。内部响应图峰可以在下一层浮点分掉到阈值下，
 // 但不能在那之前把贴边残件从名单里抹掉。
-void nmsKeepOrigins(std::vector<ShapeCandidate>& cands, double minDist, int maxCount, bool blendInterior)
+void nmsKeepOrigins(std::vector<ShapeCandidate>& cands, double minDist, int maxCount, bool blendInterior,
+					double blendRadius = 1e9)
 {
 	std::vector<ShapeCandidate> border;
 	std::vector<ShapeCandidate> interior;
@@ -808,12 +842,59 @@ void nmsKeepOrigins(std::vector<ShapeCandidate>& cands, double minDist, int maxC
 		else
 			interior.push_back(c);
 	}
-	nmsCandidates(interior, minDist, maxCount, blendInterior);
+	nmsCandidates(interior, minDist, maxCount, blendInterior, blendRadius);
 	nmsCandidates(border, minDist, maxCount, false);
 	cands.clear();
 	cands.reserve(interior.size() + border.size());
 	cands.insert(cands.end(), interior.begin(), interior.end());
 	cands.insert(cands.end(), border.begin(), border.end());
+}
+
+// 响应图平台的最高格点经常在边上。精修位置窗口已经收回 ±4，这里用浮点分在顶层
+// ±kSnapRadius 里把内部种子挪到真峰上。不改分数：有些真峰要等第一层把角度找回来，
+// 现在改成浮点分会把它们排到纹理假峰后面。贴边种子本来就对准了，不再挪。
+void snapInteriorFloat(std::vector<ShapeCandidate>& cands, const std::vector<ShapeEdgePt>& edges, const cv::Mat& nx,
+					   const cv::Mat& ny, const cv::Mat& mag, float minMag, bool polarity, double greed,
+					   bool scaleSearch)
+{
+	const int n = (int)cands.size();
+	const int cols = nx.cols;
+	const int rows = nx.rows;
+#pragma omp parallel for schedule(static)
+	for (int i = 0; i < n; ++i)
+	{
+		if (cands[i].fromBorder)
+			continue;
+		const std::vector<ShapeEdgePt> model =
+			scaleSearch ? scaleEdges(rotateModel(edges, cands[i].angle), cands[i].scale)
+						: rotateModel(edges, cands[i].angle);
+		double bestS = -1.0;
+		double bx = cands[i].cx;
+		double by = cands[i].cy;
+		for (int dy = -kSnapRadius; dy <= kSnapRadius; ++dy)
+		{
+			for (int dx = -kSnapRadius; dx <= kSnapRadius; ++dx)
+			{
+				const double cx = cands[i].cx + dx;
+				const double cy = cands[i].cy + dy;
+				if (cx < 0.0 || cy < 0.0 || cx > cols - 1 || cy > rows - 1)
+					continue;
+				// minScore=0：贪心早停返回的是没算完的平均，不能拿来选位置。
+				const double sc = scorePose(model, nx, ny, mag, minMag, cx, cy, polarity, greed, 0.0, false);
+				if (sc > bestS)
+				{
+					bestS = sc;
+					bx = cx;
+					by = cy;
+				}
+			}
+		}
+		if (bestS >= 0.0)
+		{
+			cands[i].cx = bx;
+			cands[i].cy = by;
+		}
+	}
 }
 
 }  // namespace
@@ -975,43 +1056,41 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	std::vector<ShapeCandidate> coarse;
 	if (!scaleSearch_)
 	{
-#pragma omp parallel
+		// 每个角度写自己的桶，再按角度下标拼起来。critical 按线程完成顺序拼接，同分平台的种子会变。
+		std::vector<std::vector<ShapeCandidate>> buckets(angles.size());
+#pragma omp parallel for schedule(dynamic)
+		for (int ai = 0; ai < (int)angles.size(); ++ai)
 		{
 			std::vector<ShapeCandidate> local;
-#pragma omp for schedule(dynamic)
-			for (int ai = 0; ai < (int)angles.size(); ++ai)
+			const auto model = rotateModel(topModel.edges, angles[ai]);
+			const std::vector<MapPoint> mapPts = quantCoarse ? makeMapPoints(model) : std::vector<MapPoint>();
+			for (int y = margin; y < pyr[top].rows - margin; y += stride)
 			{
-				const auto model = rotateModel(topModel.edges, angles[ai]);
-				const std::vector<MapPoint> mapPts = quantCoarse ? makeMapPoints(model) : std::vector<MapPoint>();
-				for (int y = margin; y < pyr[top].rows - margin; y += stride)
+				for (int x = margin; x < pyr[top].cols - margin; x += stride)
 				{
-					for (int x = margin; x < pyr[top].cols - margin; x += stride)
-					{
-						// 贴边用浮点分。响应图在裁掉的轮廓旁边会把任意强边收成高分，
-						// 弱残件排不进前几百个峰，下一层也就看不到。
-						const bool border = quantCoarse &&
-							onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, margin, kCoarseBorderBand);
-						const double sc = (quantCoarse && !border)
-							? scorePoseMap(mapPts, respTop, x, y, greed, coarseTh)
-							: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
-										x, y, polarity, greed, coarseTh, false);
-						if (sc < coarseTh)
-							continue;
-						ShapeCandidate c;
-						c.cx = x;
-						c.cy = y;
-						c.angle = angles[ai];
-						c.score = sc;
-						c.fromBorder = border;
-						local.push_back(c);
-					}
+					// 贴边用浮点分。响应图在裁掉的轮廓旁边会把任意强边收成高分，
+					// 弱残件排不进前几百个峰，下一层也就看不到。
+					const bool border = quantCoarse &&
+						onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, margin, kCoarseBorderBand);
+					const double sc = (quantCoarse && !border)
+						? scorePoseMap(mapPts, respTop, x, y, greed, coarseTh)
+						: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
+									x, y, polarity, greed, coarseTh, false);
+					if (sc < coarseTh)
+						continue;
+					ShapeCandidate c;
+					c.cx = x;
+					c.cy = y;
+					c.angle = angles[ai];
+					c.score = sc;
+					c.fromBorder = border;
+					local.push_back(c);
 				}
 			}
-#pragma omp critical
-			{
-				coarse.insert(coarse.end(), local.begin(), local.end());
-			}
+			buckets[ai].swap(local);
 		}
+		for (auto& b : buckets)
+			coarse.insert(coarse.end(), b.begin(), b.end());
 	}
 	else
 	{
@@ -1025,53 +1104,55 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		for (int ai = 0; ai < (int)angles.size(); ++ai)
 			for (int si = 0; si < (int)scales_.size(); ++si)
 				jobs.emplace_back(ai, si);
-#pragma omp parallel
+		std::vector<std::vector<ShapeCandidate>> buckets(jobs.size());
+#pragma omp parallel for schedule(dynamic)
+		for (int ji = 0; ji < (int)jobs.size(); ++ji)
 		{
 			std::vector<ShapeCandidate> local;
-#pragma omp for schedule(dynamic)
-			for (int ji = 0; ji < (int)jobs.size(); ++ji)
+			const int ai = jobs[ji].first;
+			const double objScale = scales_[jobs[ji].second];
+			const auto model = scaleEdges(rotateModel(topModel.edges, angles[ai]), objScale);
+			const std::vector<MapPoint> mapPts = quantCoarse ? makeMapPoints(model) : std::vector<MapPoint>();
+			const int mgn = borderMargin(pyr[top].rows, pyr[top].cols, scaleStride);
+			for (int y = mgn; y < pyr[top].rows - mgn; y += scaleStride)
 			{
-				const int ai = jobs[ji].first;
-				const double objScale = scales_[jobs[ji].second];
-				const auto model = scaleEdges(rotateModel(topModel.edges, angles[ai]), objScale);
-				const std::vector<MapPoint> mapPts = quantCoarse ? makeMapPoints(model) : std::vector<MapPoint>();
-				const int mgn = borderMargin(pyr[top].rows, pyr[top].cols, scaleStride);
-				for (int y = mgn; y < pyr[top].rows - mgn; y += scaleStride)
+				for (int x = mgn; x < pyr[top].cols - mgn; x += scaleStride)
 				{
-					for (int x = mgn; x < pyr[top].cols - mgn; x += scaleStride)
-					{
-						const bool border = quantCoarse &&
-							onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, mgn, kCoarseBorderBand);
-						const double sc = (quantCoarse && !border)
-							? scorePoseMap(mapPts, respTop, x, y, greed, coarseTh)
-							: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
-										x, y, polarity, greed, coarseTh, false);
-						if (sc < coarseTh)
-							continue;
-						ShapeCandidate c;
-						c.cx = x;
-						c.cy = y;
-						c.angle = angles[ai];
-						c.score = sc;
-						c.scale = objScale;
-						c.fromBorder = border;
-						local.push_back(c);
-					}
+					const bool border = quantCoarse &&
+						onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, mgn, kCoarseBorderBand);
+					const double sc = (quantCoarse && !border)
+						? scorePoseMap(mapPts, respTop, x, y, greed, coarseTh)
+						: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
+									x, y, polarity, greed, coarseTh, false);
+					if (sc < coarseTh)
+						continue;
+					ShapeCandidate c;
+					c.cx = x;
+					c.cy = y;
+					c.angle = angles[ai];
+					c.score = sc;
+					c.scale = objScale;
+					c.fromBorder = border;
+					local.push_back(c);
 				}
 			}
-#pragma omp critical
-			{
-				coarse.insert(coarse.end(), local.begin(), local.end());
-			}
+			buckets[ji].swap(local);
 		}
+		for (auto& b : buckets)
+			coarse.insert(coarse.end(), b.begin(), b.end());
 	}
 
 	const double topSpan = std::min((double)std::min(tw, th), 2.0 * (double)maxR);
 	const double minDistTop = 0.45 * std::max(4.0, topSpan);
 	if (quantCoarse)
 	{
-		// 贴边浮点分往往只有 0.5 上下，内部响应图可以整片是 1。分开去重，而且贴边不再把同分邻居收成质心。
-		nmsKeepOrigins(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, true), true);
+		// 全半径大约 16px。响应图假峰在这个距离里会把弱真峰吃掉，自己再到末层掉到阈值下。
+		// 粗搜只在大约 8px 里收平台；更远的峰都进精修，等浮点分出来再按全半径去重。
+		// 贴边仍分开，不收质心，也不做 ±2 px 挪点。
+		const double plateau = std::min(minDistTop, kPlateauDist);
+		nmsKeepOrigins(coarse, plateau, plateauKeepCount(matchParam_.maxCount), true, plateau);
+		snapInteriorFloat(coarse, topModel.edges, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag, polarity,
+						  greed, scaleSearch_);
 	}
 	else
 		nmsCandidates(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, false), false);
@@ -1082,16 +1163,14 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		std::vector<ShapeCandidate> next;
 		const auto& mdl = layers_[layer];
 		double step = angleStepDeg(mdl.edges);
-		// 响应图种子的角度可以偏大约 10°，内部第一层用 ±10 px、大约 ±12° 找回来。
-		// 贴边种子的浮点粗分已经对准。233 上 ±10 px 会把 T11 从 (25, 159)@0.53 拖到 (42, 157)@0.22，
-		// 下一层 ±4 px 走不回来。贴边第一层保持 ±4 px、±3 步。
-		const int rad0 = (quantCoarse && layer == top - 1) ? 10 : 4;
-#pragma omp parallel
+		// 位置窗口一律 ±4 px。内部种子已经在顶层用浮点分对齐过 ±2 px；
+		// 第一层再开 ±10 px 会把弱真峰拖到旁边纹理上，233 上就会少 1～2 个。
+		// 贴边同样是 ±4。角度仍大约 ±12°，只给内部响应图种子的第一层：粗分角度可以偏约 10°。
+		std::vector<ShapeCandidate> slots(refined.size());
+		std::vector<char> slotOk(refined.size(), 0);
+#pragma omp parallel for schedule(static)
+		for (int ci = 0; ci < (int)refined.size(); ++ci)
 		{
-			std::vector<ShapeCandidate> local;
-#pragma omp for schedule(dynamic)
-			for (int ci = 0; ci < (int)refined.size(); ++ci)
-			{
 			const auto& c0 = refined[ci];
 			const double cx0 = c0.cx * 2.0;
 			const double cy0 = c0.cy * 2.0;
@@ -1099,7 +1178,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			ShapeCandidate best = c0;
 			best.cx = cx0;
 			best.cy = cy0;
-			const int rad = c0.fromBorder ? 4 : rad0;
+			const int rad = 4;
 			std::vector<double> angs;
 			if (matchParam_.angle < 1e-6)
 				angs.push_back(0.0);
@@ -1207,12 +1286,16 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				}
 			}
 			if (best.score >= matchParam_.scoreThreshold * (layer == stopLayer ? 1.0 : 0.65))
-				local.push_back(best);
-			}
-#pragma omp critical
 			{
-				next.insert(next.end(), local.begin(), local.end());
+				slots[ci] = best;
+				slotOk[ci] = 1;
 			}
+		}
+		next.reserve(refined.size());
+		for (int ci = 0; ci < (int)refined.size(); ++ci)
+		{
+			if (slotOk[ci])
+				next.push_back(slots[ci]);
 		}
 		const double layerSpan = std::min((double)std::min(layers_[layer].width, layers_[layer].height),
 										  2.0 * (double)modelRadius(mdl.edges));
