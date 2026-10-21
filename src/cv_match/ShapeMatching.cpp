@@ -151,16 +151,18 @@ inline float sample32(const cv::Mat& m, float x, float y)
 		return 0.f;
 	if (x < 0.f || y < 0.f || x > w - 1.f || y > h - 1.f)
 		return 0.f;
-	const int x0 = (int)std::floor(x);
-	const int y0 = (int)std::floor(y);
-	const int x1 = std::min(x0 + 1, w - 1);
-	const int y1 = std::min(y0 + 1, h - 1);
-	const float dx = x - x0;
-	const float dy = y - y0;
-	const float v00 = m.at<float>(y0, x0);
-	const float v10 = m.at<float>(y0, x1);
-	const float v01 = m.at<float>(y1, x0);
-	const float v11 = m.at<float>(y1, x1);
+	const int x0 = (int)x;
+	const int y0 = (int)y;
+	const int x1 = x0 + 1 < w ? x0 + 1 : x0;
+	const int y1 = y0 + 1 < h ? y0 + 1 : y0;
+	const float dx = x - (float)x0;
+	const float dy = y - (float)y0;
+	const float* r0 = m.ptr<float>(y0);
+	const float* r1 = m.ptr<float>(y1);
+	const float v00 = r0[x0];
+	const float v10 = r0[x1];
+	const float v01 = r1[x0];
+	const float v11 = r1[x1];
 	return (1.f - dx) * (1.f - dy) * v00 + dx * (1.f - dy) * v10 +
 		   (1.f - dx) * dy * v01 + dx * dy * v11;
 }
@@ -231,10 +233,29 @@ void buildOri16(const cv::Mat& nx, const cv::Mat& ny, const cv::Mat& mag, float 
 }
 
 // 16 张响应图。R_b(x,y) 是 b 档与场景方向在 ±spread 里的最大余弦（极性由建图时选定）。
-// 扩散只做一次：粗搜每个位姿、每个模型点变成一次查表。
-// 顶层 A 个角度、P 个位置、N 个点、邻域边长 T=2*spread+1 时，
-// 原来是 O(A·P·N·T²)，现在是 O(16·W·H·T² + A·P·N)。T=5 时位姿内层大约少 25 倍，
-// 也不再每个位姿分配方向标签。末层精修仍用浮点 scorePose。oriBins!=16 不建这些图。
+// 扩散只做一次，位姿循环只查表。spread=3 盖住步长 4 的中心误差（≤2px），
+// 并给顶层加粗后的角度步长留大约 1px 切向。末层精修仍用浮点 scorePose。
+// oriBins!=16 不建这些图。
+constexpr int kMapSpread = 3;
+constexpr int kMapStride = 4;
+
+// 粗搜进精修的名额。oriBins=16 至少留 96 个峰，避免 ±180° 的旁瓣挤掉贴边弱分；
+// maxCount 很大时收到大约 2 倍，不再按 4 倍把纹理假峰全送进金字塔。
+int coarseKeepCount(int maxCount, bool quant)
+{
+	const int loose = std::max(maxCount * 4, maxCount + 8);
+	if (!quant)
+		return loose;
+	return std::min(std::max(loose, 96), std::max(maxCount * 2, 96));
+}
+
+int refineKeepCount(int maxCount, bool quant)
+{
+	const int loose = std::max(maxCount * 3, maxCount + 6);
+	if (!quant)
+		return loose;
+	return std::min(std::max(loose, 64), std::max(maxCount * 2, 64));
+}
 struct OriResponse16
 {
 	int width = 0;
@@ -550,15 +571,40 @@ double scorePose(const std::vector<ShapeEdgePt>& model, const cv::Mat& nx, const
 	const double abortBelow = minScore * std::max(0.0, std::min(1.0, greediness));
 	// 只压很弱的纹理。门槛封顶，不随 edgeMinMag 抬到 119 那种对比度，否则正常边缘和残缺件会被乘到 0.5 下面。
 	const float magGate = std::min(32.f, std::max(8.f, 2.5f * minMag));
+	const int w = nx.cols, h = nx.rows;
+	if (w < 2 || h < 2)
+		return 0.0;
+	const float xMax = (float)(w - 1);
+	const float yMax = (float)(h - 1);
 	for (int i = 0; i < n; ++i)
 	{
 		const float px = (float)(cx + model[i].dx);
 		const float py = (float)(cy + model[i].dy);
-		if (!inFrame32(nx, px, py))
+		if (px < 0.f || py < 0.f || px > xMax || py > yMax)
 			continue;
-		const float inx = sample32(nx, px, py);
-		const float iny = sample32(ny, px, py);
-		const float sm = spatialBalance ? sample32(mag, px, py) : magGate;
+		const int x0 = (int)px;
+		const int y0 = (int)py;
+		const int x1 = x0 + 1 < w ? x0 + 1 : x0;
+		const int y1 = y0 + 1 < h ? y0 + 1 : y0;
+		const float dx = px - (float)x0;
+		const float dy = py - (float)y0;
+		const float* nx0 = nx.ptr<float>(y0);
+		const float* nx1 = nx.ptr<float>(y1);
+		const float* ny0 = ny.ptr<float>(y0);
+		const float* ny1 = ny.ptr<float>(y1);
+		const float w00 = (1.f - dx) * (1.f - dy);
+		const float w10 = dx * (1.f - dy);
+		const float w01 = (1.f - dx) * dy;
+		const float w11 = dx * dy;
+		const float inx = w00 * nx0[x0] + w10 * nx0[x1] + w01 * nx1[x0] + w11 * nx1[x1];
+		const float iny = w00 * ny0[x0] + w10 * ny0[x1] + w01 * ny1[x0] + w11 * ny1[x1];
+		float sm = magGate;
+		if (spatialBalance)
+		{
+			const float* m0 = mag.ptr<float>(y0);
+			const float* m1 = mag.ptr<float>(y1);
+			sm = w00 * m0[x0] + w10 * m0[x1] + w01 * m1[x0] + w11 * m1[x1];
+		}
 		float w = std::min(1.f, sm / magGate);
 		double raw = model[i].nx * inx + model[i].ny * iny;
 		if (!polarity)
@@ -655,31 +701,65 @@ MatchResult packResult(double cx, double cy, double angleDeg, double score, int 
 	return r;
 }
 
-void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCount)
+void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCount, bool blendTies = false)
 {
 	std::sort(cands.begin(), cands.end(),
 			  [](const ShapeCandidate& a, const ShapeCandidate& b) { return a.score > b.score; });
-	std::vector<ShapeCandidate> kept;
+	// 响应图把分数铺平之后，同一实例上很多格点都是 1。只留排序第一个会停在平台边缘，
+	// 精修窗口够不着真中心。同分的邻居收成质心，角度用圆周平均。
+	struct Acc
+	{
+		ShapeCandidate c;
+		double seedX = 0;
+		double seedY = 0;
+		double w = 1;
+		double angC = 0;
+		double angS = 0;
+	};
+	std::vector<Acc> kept;
+	kept.reserve(std::min((int)cands.size(), std::max(maxCount, 1)));
 	for (const auto& c : cands)
 	{
-		bool ok = true;
-		for (const auto& k : kept)
+		int match = -1;
+		for (int i = 0; i < (int)kept.size(); ++i)
 		{
-			// 不看夹角：圆环和圆点在很多角度上分数几乎一样，属于同一个实例。
-			const double d = std::hypot(c.cx - k.cx, c.cy - k.cy);
-			if (d < minDist)
+			// 用种子位置，不用挪过的质心，避免两个挨着的实例被收成一个。
+			if (std::hypot(c.cx - kept[i].seedX, c.cy - kept[i].seedY) < minDist)
 			{
-				ok = false;
+				match = i;
 				break;
 			}
 		}
-		if (!ok)
+		if (match >= 0)
+		{
+			Acc& a = kept[match];
+			if (blendTies && c.score >= a.c.score - 1e-4)
+			{
+				const double w = a.w;
+				a.c.cx = (a.c.cx * w + c.cx) / (w + 1.0);
+				a.c.cy = (a.c.cy * w + c.cy) / (w + 1.0);
+				a.angC += std::cos(c.angle * kD2R);
+				a.angS += std::sin(c.angle * kD2R);
+				a.c.angle = std::atan2(a.angS, a.angC) * kR2D;
+				a.w = w + 1.0;
+			}
 			continue;
-		kept.push_back(c);
+		}
 		if ((int)kept.size() >= maxCount)
-			break;
+			continue;
+		Acc a;
+		a.c = c;
+		a.seedX = c.cx;
+		a.seedY = c.cy;
+		a.w = 1;
+		a.angC = std::cos(c.angle * kD2R);
+		a.angS = std::sin(c.angle * kD2R);
+		kept.push_back(a);
 	}
-	cands.swap(kept);
+	cands.clear();
+	cands.reserve(kept.size());
+	for (const auto& a : kept)
+		cands.push_back(a.c);
 }
 
 }  // namespace
@@ -800,10 +880,10 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		computeUnitGrad(pyr[i], nx[i], ny[i], mag[i]);
 	const bool quantCoarse = matchParam_.oriBins == 16;
 	const bool polarity = matchParam_.usePolarity;
-	// ±2 与原先 scorePoseQuant 的邻域一致，扩散进响应图，不放进位姿循环。
+	// ±kMapSpread 扩散进响应图，不放进位姿循环。步长 kMapStride 的中心误差不超过 spread。
 	OriResponse16 respTop;
 	if (quantCoarse)
-		buildOriResponse16(nx[top], ny[top], mag[top], 6.f, polarity, 2, respTop);
+		buildOriResponse16(nx[top], ny[top], mag[top], 6.f, polarity, kMapSpread, respTop);
 
 	const ShapeLayer& topModel = layers_[top];
 	double angStep = angleStepDeg(topModel.edges);
@@ -812,6 +892,11 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		const float scaledR = std::max(1.f, modelRadius(topModel.edges) * (float)scaleMax_);
 		angStep = std::max(0.25, std::atan(1.0 / scaledR) * kR2D);
 	}
+	// 搜索范围够宽时才把顶层步长加倍。半步误差大约是原来的 atan(1/R)，
+	// 下一层 ±3 个更小的步长盖得住。范围只有几度时不加倍，避免整段只剩 0°。
+	// oriBins=0 保持原来的步长。末层浮点分不看这个步长。
+	if (quantCoarse && matchParam_.angle > angStep * 4.0)
+		angStep *= 2.0;
 	std::vector<double> angles;
 	if (matchParam_.angle < 1e-6)
 		angles.push_back(0.0);
@@ -828,9 +913,10 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	int stride = std::max(1, std::min(tw, th) / 8);
 	if (stride > 4)
 		stride = 4;
-	// ±2 已在响应图里。步长仍收到 2，精修 ±4 才盖得住斜向漏格。
-	if (quantCoarse && stride > 2)
-		stride = 2;
+	// 旧的「步长≤2」是在补逐点 ±2。响应图把邻域最大值铺开之后，步长 4 的格点误差 ≤2，
+	// 下一层搜索半径盖得住。oriBins=0 仍用上面的 1–4。
+	if (quantCoarse)
+		stride = kMapStride;
 	const int margin = borderMargin(pyr[top].rows, pyr[top].cols, stride);
 	const double coarseTh = matchParam_.scoreThreshold * 0.72;
 	const double greed = matchParam_.greediness;
@@ -875,8 +961,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		int scaleStride = std::max(1, std::min(tw, th) / 12);
 		if (scaleStride > 4)
 			scaleStride = 4;
-		if (quantCoarse && scaleStride > 2)
-			scaleStride = 2;
+		if (quantCoarse)
+			scaleStride = kMapStride;
 		std::vector<std::pair<int, int>> jobs;
 		jobs.reserve(angles.size() * scales_.size());
 		for (int ai = 0; ai < (int)angles.size(); ++ai)
@@ -921,7 +1007,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 
 	const double topSpan = std::min((double)std::min(tw, th), 2.0 * (double)maxR);
 	const double minDistTop = 0.45 * std::max(4.0, topSpan);
-	nmsCandidates(coarse, minDistTop, std::max(matchParam_.maxCount * 4, matchParam_.maxCount + 8));
+	nmsCandidates(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, quantCoarse), quantCoarse);
 
 	std::vector<ShapeCandidate> refined = coarse;
 	for (int layer = top - 1; layer >= stopLayer; --layer)
@@ -929,15 +1015,22 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		std::vector<ShapeCandidate> next;
 		const auto& mdl = layers_[layer];
 		double step = angleStepDeg(mdl.edges);
-		for (const auto& c0 : refined)
+		// 质心之后顶层误差大约 2px，翻到下一层是 4px。±5 接住，不再把窗口开到能锁上旁边的假峰。
+		const int rad0 = (quantCoarse && layer == top - 1) ? 5 : 4;
+#pragma omp parallel
 		{
+			std::vector<ShapeCandidate> local;
+#pragma omp for schedule(dynamic)
+			for (int ci = 0; ci < (int)refined.size(); ++ci)
+			{
+			const auto& c0 = refined[ci];
 			const double cx0 = c0.cx * 2.0;
 			const double cy0 = c0.cy * 2.0;
 			double bestS = -1;
 			ShapeCandidate best = c0;
 			best.cx = cx0;
 			best.cy = cy0;
-			const int rad = 4;
+			const int rad = rad0;
 			std::vector<double> angs;
 			if (matchParam_.angle < 1e-6)
 				angs.push_back(0.0);
@@ -1007,7 +1100,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 					if (!dup)
 						tryScales.push_back(s);
 				}
-				const int radS = 4;
+				const int radS = rad0;
 				for (double ang : angs)
 				{
 					const auto rotated = rotateModel(mdl.edges, ang);
@@ -1040,19 +1133,24 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				}
 			}
 			if (best.score >= matchParam_.scoreThreshold * (layer == stopLayer ? 1.0 : 0.65))
-				next.push_back(best);
+				local.push_back(best);
+			}
+#pragma omp critical
+			{
+				next.insert(next.end(), local.begin(), local.end());
+			}
 		}
 		const double layerSpan = std::min((double)std::min(layers_[layer].width, layers_[layer].height),
 										  2.0 * (double)modelRadius(mdl.edges));
 		const double md = 0.45 * std::max(4.0, layerSpan);
-		nmsCandidates(next, md, std::max(matchParam_.maxCount * 3, matchParam_.maxCount + 6));
+		nmsCandidates(next, md, refineKeepCount(matchParam_.maxCount, quantCoarse));
 		refined.swap(next);
 	}
 
 	const double fullSpan = std::min((double)std::min(layers_[stopLayer].width, layers_[stopLayer].height),
 									 2.0 * (double)modelRadius(layers_[stopLayer].edges));
 	nmsCandidates(refined, 0.45 * std::max(4.0, fullSpan),
-				  std::max(matchParam_.maxCount * 4, matchParam_.maxCount + 8));
+				  coarseKeepCount(matchParam_.maxCount, quantCoarse));
 	const int pyrScale = 1 << stopLayer;
 	std::vector<MatchResult> packed;
 	packed.reserve(refined.size());

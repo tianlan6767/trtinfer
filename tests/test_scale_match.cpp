@@ -1497,6 +1497,91 @@ void testShapeOri16ResponseMapWideAngle()
 	}
 }
 
+// 步长 4、顶层角度步长 ×2 之后，±180° 仍要留下转过的件和贴左边的件。
+// 不是 233 原图。桌面机用 233 复测 n 和 find。
+void testShapeOri16Stride4KeepsWideHits()
+{
+	using namespace template_matching;
+	const int tw = 96, th = 128;
+	cv::Mat templ(th, tw, CV_8U, cv::Scalar(36));
+	cv::rectangle(templ, {8, 10}, {tw - 10, th - 12}, cv::Scalar(210), 4);
+	cv::rectangle(templ, {18, 24}, {tw / 2, th / 2}, cv::Scalar(210), cv::FILLED);
+	cv::circle(templ, {tw - 28, th - 32}, 12, cv::Scalar(40), cv::FILLED);
+	cv::Mat mask = cv::Mat::zeros(templ.size(), CV_8U);
+	cv::rectangle(mask, {4, 6}, {tw - 6, th - 8}, cv::Scalar(255), cv::FILLED);
+
+	auto paint = [&](cv::Mat& scene, cv::Point2d c, double angDeg) {
+		cv::Mat rot;
+		const cv::Point2f pivot((templ.cols - 1) * 0.5f, (templ.rows - 1) * 0.5f);
+		const cv::Mat M = cv::getRotationMatrix2D(pivot, angDeg, 1.0);
+		cv::warpAffine(templ, rot, M, templ.size(), cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(36));
+		const int x0 = (int)std::lround(c.x - (rot.cols - 1) / 2.0);
+		const int y0 = (int)std::lround(c.y - (rot.rows - 1) / 2.0);
+		for (int y = 0; y < rot.rows; ++y)
+		{
+			const int sy = y0 + y;
+			if (sy < 0 || sy >= scene.rows)
+				continue;
+			for (int x = 0; x < rot.cols; ++x)
+			{
+				const int sx = x0 + x;
+				if (sx < 0 || sx >= scene.cols)
+					continue;
+				const uchar v = rot.at<uchar>(y, x);
+				if (v != 36)
+					scene.at<uchar>(sy, sx) = v;
+			}
+		}
+	};
+
+	cv::Mat scene(480, 720, CV_8U, cv::Scalar(36));
+	const struct
+	{
+		cv::Point2d c;
+		double ang;
+	} inst[] = {
+		{{180, 120}, 0},
+		{{420, 110}, 25},
+		{{600, 160}, -40},
+		{{200, 320}, 140},
+		{{480, 340}, 15},
+		{{36, 240}, 0},
+	};
+	for (const auto& it : inst)
+		paint(scene, it.c, it.ang);
+
+	MatcherParam param;
+	param.matcherType = MatcherType::SHAPE;
+	param.angle = 180;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 12;
+	param.iouThreshold = 0.4;
+	param.minArea = 256;
+	param.edgeMinMag = 29;
+	param.edgeContrast = 119;
+	param.maxEdgePoints = 280;
+	param.usePolarity = true;
+	param.greediness = 0.9;
+	param.oriBins = 16;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(templ, mask) == 0, "shape ori16-stride4 setTemplate");
+	std::vector<MatchResult> hits;
+	const auto t0 = std::chrono::steady_clock::now();
+	matcher->match(scene, hits);
+	const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+	std::cout << "    shape ori16-stride4 ±180 find " << ms << " ms n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " ang=" << h.Angle << " c=(" << h.Center.x << "," << h.Center.y << ")"
+				  << std::endl;
+	expect((int)hits.size() == (int)(sizeof(inst) / sizeof(inst[0])), "shape ori16-stride4 keeps every part");
+	for (const auto& it : inst)
+	{
+		expect(countNear(hits, it.c, 12.0) == 1, "shape ori16-stride4 one hit per part");
+		const MatchResult* h = nearestHit(hits, it.c);
+		expect(h && h->Score >= 0.5, "shape ori16-stride4 score passes 0.5");
+	}
+}
+
 void testPatternBrightnessLikeExposure()
 {
 	using namespace template_matching;
@@ -1552,6 +1637,7 @@ int main()
 	testShapeBorderPartial();
 	testShapeOri16PartialMatchesFloat();
 	testShapeOri16ResponseMapWideAngle();
+	testShapeOri16Stride4KeepsWideHits();
 	testShapeFaintRingThird();
 	testPatternOneQuadrantOcclusion();
 	testBoardPoseUnchanged();
