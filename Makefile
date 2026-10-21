@@ -209,6 +209,7 @@ viz_srcs := \
 	$(srcdir)/cv_match/ShapeMatching.cpp \
 	$(srcdir)/cv_match/base_matcher.cpp \
 	$(srcdir)/cv_match/matcher.cpp \
+	$(srcdir)/cv_match/coarse_refine.cpp \
 	$(srcdir)/cv_sim/similarity.cpp \
 	$(srcdir)/cv_seg/seg.cpp \
 	$(srcdir)/cv_feature/feature.cpp \
@@ -225,6 +226,10 @@ $(viz_so): $(viz_srcs)
 		$(viz_srcs) -o $@ \
 		$$(pkg-config --cflags --libs opencv4) $(TESS_LIBS) $(ZBAR_LIBS)
 
+# 粗到精：只编传统模块，不链 TensorRT / CUDA。
+test-coarse : $(viz_so)
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_coarse_refine_viz.py -v
+
 test-viz : $(viz_so)
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_blob_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_pattern_match_viz.py -v
@@ -236,6 +241,7 @@ test-viz : $(viz_so)
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_golden_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_seg_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_feature_viz.py -v
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_coarse_refine_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_code_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_calib_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_measure_viz.py -v

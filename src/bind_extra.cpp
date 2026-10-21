@@ -7,6 +7,7 @@
 #include "cv_code/code.h"
 #include "cv_feature/feature.h"
 #include "cv_golden/golden.h"
+#include "cv_match/coarse_refine.h"
 #include "cv_seg/seg.h"
 #include "cv_sim/similarity.h"
 
@@ -205,6 +206,79 @@ void bindExtra(py::module_& m)
 		  py::arg("scene"), py::arg("model"),
 		  py::arg("detector") = feature::Detector::ORB,
 		  py::arg("ratio") = 0.75, py::arg("ransac_reproj") = 3.0);
+
+	py::class_<template_matching::SceneRoi>(m, "SceneRoi")
+		.def(py::init<>())
+		.def_readwrite("x", &template_matching::SceneRoi::x)
+		.def_readwrite("y", &template_matching::SceneRoi::y)
+		.def_readwrite("width", &template_matching::SceneRoi::width)
+		.def_readwrite("height", &template_matching::SceneRoi::height)
+		.def("__repr__", [](const template_matching::SceneRoi& r) {
+			std::ostringstream oss;
+			oss << "SceneRoi(x=" << r.x << ", y=" << r.y
+				<< ", width=" << r.width << ", height=" << r.height << ")";
+			return oss.str();
+		});
+
+	py::class_<template_matching::CoarseRefineParam>(m, "CoarseRefineParam")
+		.def(py::init<>())
+		.def_readwrite("detector", &template_matching::CoarseRefineParam::detector)
+		.def_readwrite("ratio", &template_matching::CoarseRefineParam::ratio)
+		.def_readwrite("ransacReproj", &template_matching::CoarseRefineParam::ransacReproj)
+		.def_readwrite("minInliers", &template_matching::CoarseRefineParam::minInliers)
+		.def_readwrite("margin", &template_matching::CoarseRefineParam::margin)
+		.def_readwrite("matcherType", &template_matching::CoarseRefineParam::matcherType)
+		.def_readwrite("maxCount", &template_matching::CoarseRefineParam::maxCount)
+		.def_readwrite("scoreThreshold", &template_matching::CoarseRefineParam::scoreThreshold)
+		.def_readwrite("iouThreshold", &template_matching::CoarseRefineParam::iouThreshold)
+		.def_readwrite("angle", &template_matching::CoarseRefineParam::angle)
+		.def_readwrite("minArea", &template_matching::CoarseRefineParam::minArea)
+		.def_readwrite("meanBorder", &template_matching::CoarseRefineParam::meanBorder)
+		.def_readwrite("stopLayer", &template_matching::CoarseRefineParam::stopLayer)
+		.def_readwrite("edgeMinMag", &template_matching::CoarseRefineParam::edgeMinMag)
+		.def_readwrite("maxEdgePoints", &template_matching::CoarseRefineParam::maxEdgePoints)
+		.def_readwrite("usePolarity", &template_matching::CoarseRefineParam::usePolarity)
+		.def_readwrite("greediness", &template_matching::CoarseRefineParam::greediness)
+		.def_readwrite("minScale", &template_matching::CoarseRefineParam::minScale)
+		.def_readwrite("maxScale", &template_matching::CoarseRefineParam::maxScale)
+		.def_readwrite("scaleStep", &template_matching::CoarseRefineParam::scaleStep)
+		.def_readwrite("numScales", &template_matching::CoarseRefineParam::numScales)
+		.def("__repr__", [](const template_matching::CoarseRefineParam& p) {
+			std::ostringstream oss;
+			oss << "CoarseRefineParam(detector=" << static_cast<int>(p.detector)
+				<< ", matcherType=" << static_cast<int>(p.matcherType)
+				<< ", angle=" << p.angle
+				<< ", margin=" << p.margin
+				<< ", stopLayer=" << p.stopLayer
+				<< ", scoreThreshold=" << p.scoreThreshold
+				<< ", maxCount=" << p.maxCount
+				<< ")";
+			return oss.str();
+		});
+
+	py::class_<template_matching::CoarseRefineResult>(m, "CoarseRefineResult")
+		.def(py::init<>())
+		.def_readwrite("found", &template_matching::CoarseRefineResult::found)
+		.def_readwrite("message", &template_matching::CoarseRefineResult::message)
+		.def_readwrite("coarse", &template_matching::CoarseRefineResult::coarse)
+		.def_readwrite("roi", &template_matching::CoarseRefineResult::roi)
+		.def_readwrite("hits", &template_matching::CoarseRefineResult::hits)
+		.def("__repr__", [](const template_matching::CoarseRefineResult& r) {
+			std::ostringstream oss;
+			oss << "CoarseRefineResult(found=" << (r.found ? "true" : "false")
+				<< ", roi=(" << r.roi.x << "," << r.roi.y << "," << r.roi.width << "," << r.roi.height << ")"
+				<< ", hits=" << r.hits.size()
+				<< ", coarse=" << r.coarse.method << "/" << r.coarse.inliers
+				<< ", message=" << r.message
+				<< ")";
+			return oss.str();
+		});
+
+	m.def("match_coarse_to_fine", &template_matching::matchCoarseToFine,
+		  py::arg("scene"), py::arg("templ"),
+		  py::arg("mask") = cv::Mat(),
+		  py::arg("param") = template_matching::CoarseRefineParam(),
+		  "ORB/SIFT coarse localization, then Matcher on a contiguous ROI. Hit points are in the full scene.");
 
 	py::class_<code::DecodeHit>(m, "DecodeHit")
 		.def(py::init<>())

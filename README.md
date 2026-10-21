@@ -242,6 +242,11 @@ m.setTemplate(templ)                        # 可选 m.setTemplate(templ, mask)
 hit = m.match(gray)[0]
 print(hit.Center, hit.Angle, hit.Score, hit.Scale)
 
+# 大图：ORB 粗定位，ROI 上精匹配，坐标已回到全图。说明见 docs/feature.md
+coarse = cvter.CoarseRefineParam()
+coarse.angle = 0
+loc = cvter.match_coarse_to_fine(gray, templ, param=coarse)
+
 cp = cvter.CaliperParam()
 cp.polarity = cvter.CaliperPolarity.LightToDark
 cal = cvter.CaliperWrapper(cp)

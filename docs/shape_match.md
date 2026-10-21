@@ -70,6 +70,21 @@ hits = m.match(gray)
 
 `minScale=maxScale=1`（默认）时不进入尺度分支，只搜尺度 1。
 
+## 大图先粗定位
+
+整幅搜索很慢时，用 ORB 框 ROI 再在 ROI 上跑形状匹配。角度半宽不要收到 ±3°：大图样本上 ±3° 会漏，±5° 可以。完整参数在 [feature.md](feature.md)。
+
+```python
+param = cvter.CoarseRefineParam()
+param.matcherType = cvter.MatcherType.SHAPE
+param.angle = 5
+param.margin = 120
+param.scoreThreshold = 0.4
+param.edgeMinMag = 12
+param.stopLayer = 1      # 不要把 stopLayer=2 当加速
+loc = cvter.match_coarse_to_fine(gray, templ, mask, param)
+```
+
 ## 测试
 
 ```bash
