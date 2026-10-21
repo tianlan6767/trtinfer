@@ -1700,6 +1700,96 @@ void testShapeOri16WideLeftEdgePartial()
 	}
 }
 
+// 233 同尺寸：1288×964，模板 144×190，左缘中心 (26.3, 156)，大约只露出 2/3。
+// oriBins=16、±180°、29/119 必须留下这一件；oriBins=0 在较窄角度里也要留下。
+// 不是 233 原图。干净高对比的贴边件在响应图上也会是满分；这个用例锁的是
+// 同一几何在工具同款参数下不能丢，桌面机上的纹理图还要靠贴边浮点粗分。
+void testShapeOri16T11SizedLeftEdge()
+{
+	using namespace template_matching;
+	const int tw = 144, th = 190;
+	cv::Mat templ(th, tw, CV_8U, cv::Scalar(36));
+	cv::rectangle(templ, {12, 14}, {tw - 14, th - 16}, cv::Scalar(200), 4);
+	cv::rectangle(templ, {30, 36}, {tw / 2 + 4, th / 2}, cv::Scalar(210), cv::FILLED);
+	cv::circle(templ, {tw - 34, 52}, 14, cv::Scalar(180), cv::FILLED);
+	cv::circle(templ, {tw - 42, th - 44}, 9, cv::Scalar(40), cv::FILLED);
+	cv::line(templ, {22, th - 40}, {tw - 20, th - 28}, cv::Scalar(220), 3);
+	cv::Mat mask = cv::Mat::zeros(templ.size(), CV_8U);
+	cv::rectangle(mask, {6, 8}, {tw - 8, th - 10}, cv::Scalar(255), cv::FILLED);
+
+	auto paint = [&](cv::Mat& scene, cv::Point2d c, double angDeg) {
+		cv::Mat rot;
+		const cv::Point2f pivot((templ.cols - 1) * 0.5f, (templ.rows - 1) * 0.5f);
+		const cv::Mat M = cv::getRotationMatrix2D(pivot, angDeg, 1.0);
+		cv::warpAffine(templ, rot, M, templ.size(), cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(36));
+		const int x0 = (int)std::lround(c.x - (rot.cols - 1) / 2.0);
+		const int y0 = (int)std::lround(c.y - (rot.rows - 1) / 2.0);
+		for (int y = 0; y < rot.rows; ++y)
+		{
+			const int sy = y0 + y;
+			if (sy < 0 || sy >= scene.rows)
+				continue;
+			for (int x = 0; x < rot.cols; ++x)
+			{
+				const int sx = x0 + x;
+				if (sx < 0 || sx >= scene.cols)
+					continue;
+				const uchar v = rot.at<uchar>(y, x);
+				if (v != 36)
+					scene.at<uchar>(sy, sx) = v;
+			}
+		}
+	};
+
+	cv::Mat scene(964, 1288, CV_8U, cv::Scalar(36));
+	const cv::Point2d partial(26.3, 156);
+	const cv::Point2d interior(640, 420);
+	paint(scene, partial, 0.0);
+	paint(scene, interior, 18.0);
+
+	auto run = [&](int bins, double angle, const char* tag) {
+		MatcherParam param;
+		param.matcherType = MatcherType::SHAPE;
+		param.angle = angle;
+		param.scoreThreshold = 0.5;
+		param.maxCount = 200;
+		param.iouThreshold = 0.4;
+		param.minArea = 256;
+		param.edgeMinMag = 29;
+		param.edgeContrast = 119;
+		param.maxEdgePoints = 320;
+		param.usePolarity = true;
+		param.greediness = 0.9;
+		param.oriBins = bins;
+		auto matcher = GetMatcher(param);
+		expect(matcher && matcher->setTemplate(templ, mask) == 0, std::string("shape t11-size setTemplate ") + tag);
+		std::vector<MatchResult> hits;
+		const auto t0 = std::chrono::steady_clock::now();
+		matcher->match(scene, hits);
+		const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+		std::cout << "    shape t11-size " << tag << " find " << ms << " ms n=" << hits.size() << std::endl;
+		for (const auto& h : hits)
+			std::cout << "      sc=" << h.Score << " ang=" << h.Angle << " c=(" << h.Center.x << "," << h.Center.y << ")"
+					  << std::endl;
+		expect(countNear(hits, partial, 12.0) == 1, std::string("shape t11-size finds left edge ") + tag);
+		const MatchResult* edge = nearestHit(hits, partial);
+		expect(edge && edge->Score >= 0.5, std::string("shape t11-size left edge score ") + tag);
+		if (bins == 16)
+		{
+			expect(countNear(hits, interior, 12.0) == 1, "shape t11-size keeps interior");
+			if (edge)
+			{
+				double dAng = std::fabs(edge->Angle);
+				if (dAng > 180.0)
+					dAng = 360.0 - dAng;
+				expect(dAng <= 8.0, "shape t11-size left edge angle");
+			}
+		}
+	};
+	run(16, 180, "ori16");
+	run(0, 20, "ori0");
+}
+
 }  // namespace
 
 int main()
@@ -1731,6 +1821,7 @@ int main()
 	testShapeOri16ResponseMapWideAngle();
 	testShapeOri16Stride4KeepsWideHits();
 	testShapeOri16WideLeftEdgePartial();
+	testShapeOri16T11SizedLeftEdge();
 	testShapeFaintRingThird();
 	testPatternOneQuadrantOcclusion();
 	testBoardPoseUnchanged();

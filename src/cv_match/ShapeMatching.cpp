@@ -132,6 +132,19 @@ bool poseHopeless(double sum, int used, int n, int index, double abortBelow)
 	return best < abortBelow;
 }
 
+// 响应图在贴边会把「旁边任意一条强边」算成高分，浮点粗分不会。
+// 四边这条带改回浮点 scorePose，名额和内部纹理分开，避免弱残件排不进前几百个峰。
+constexpr int kCoarseBorderBand = 16;
+
+bool onCoarseBorder(int x, int y, int rows, int cols, int margin, int band)
+{
+	if (x < margin + band || y < margin + band)
+		return true;
+	if (x >= cols - margin - band || y >= rows - margin - band)
+		return true;
+	return false;
+}
+
 // 顶层不再用模型半径当搜索边距。半径换算回原图大约是 80–120 px，贴边残件的中心进不了粗搜。
 int borderMargin(int rows, int cols, int stride)
 {
@@ -664,9 +677,13 @@ double scorePoseMap(const std::vector<MapPoint>& model, const OriResponse16& res
 	const double abortBelow = minScore * std::max(0.0, std::min(1.0, greediness));
 	for (int i = 0; i < n; ++i)
 	{
-		const int px = (int)std::lround(cx + (double)model[i].dx);
-		const int py = (int)std::lround(cy + (double)model[i].dy);
-		// 点本身在画布外就跳过，不用邻域往画面里捞一条边来凑分。邻域最大已在响应图里。
+		// 先按浮点位置判断出界。lround 会把 [-0.5,0) 收成 0，把裁掉的轮廓当成画面里的点。
+		const double fx = cx + (double)model[i].dx;
+		const double fy = cy + (double)model[i].dy;
+		if (fx < 0.0 || fy < 0.0 || fx > (double)(w - 1) || fy > (double)(h - 1))
+			continue;
+		const int px = (int)std::lround(fx);
+		const int py = (int)std::lround(fy);
 		if ((unsigned)px >= (unsigned)w || (unsigned)py >= (unsigned)h)
 			continue;
 		float best = 0.f;
@@ -944,9 +961,14 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				{
 					for (int x = margin; x < pyr[top].cols - margin; x += stride)
 					{
-						const double sc = quantCoarse
+						// 贴边用浮点分。响应图在裁掉的轮廓旁边会把任意强边收成高分，
+						// 弱残件排不进前几百个峰，下一层也就看不到。
+						const bool border = quantCoarse &&
+							onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, margin, kCoarseBorderBand);
+						const double sc = (quantCoarse && !border)
 							? scorePoseMap(mapPts, respTop, x, y, greed, coarseTh)
-							: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag, x, y, polarity, greed, coarseTh, false);
+							: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
+										x, y, polarity, greed, coarseTh, false);
 						if (sc < coarseTh)
 							continue;
 						ShapeCandidate c;
@@ -991,9 +1013,12 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				{
 					for (int x = mgn; x < pyr[top].cols - mgn; x += scaleStride)
 					{
-						const double sc = quantCoarse
+						const bool border = quantCoarse &&
+							onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, mgn, kCoarseBorderBand);
+						const double sc = (quantCoarse && !border)
 							? scorePoseMap(mapPts, respTop, x, y, greed, coarseTh)
-							: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag, x, y, polarity, greed, coarseTh, false);
+							: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
+										x, y, polarity, greed, coarseTh, false);
 						if (sc < coarseTh)
 							continue;
 						ShapeCandidate c;
@@ -1015,7 +1040,34 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 
 	const double topSpan = std::min((double)std::min(tw, th), 2.0 * (double)maxR);
 	const double minDistTop = 0.45 * std::max(4.0, topSpan);
-	nmsCandidates(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, quantCoarse), quantCoarse);
+	if (quantCoarse)
+	{
+		// 尺度搜索的边距和上面非尺度分支用的是同一个顶层步长，分类时对齐。
+		const int classMargin = scaleSearch_ ? borderMargin(pyr[top].rows, pyr[top].cols, kMapStride) : margin;
+		std::vector<ShapeCandidate> borderCands;
+		std::vector<ShapeCandidate> interiorCands;
+		borderCands.reserve(coarse.size() / 8 + 1);
+		interiorCands.reserve(coarse.size());
+		for (const auto& c : coarse)
+		{
+			const int x = (int)std::lround(c.cx);
+			const int y = (int)std::lround(c.cy);
+			if (onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, classMargin, kCoarseBorderBand))
+				borderCands.push_back(c);
+			else
+				interiorCands.push_back(c);
+		}
+		const int keep = coarseKeepCount(matchParam_.maxCount, true);
+		// 贴边浮点分往往只有 0.5 上下，内部响应图可以整片是 1。分开去重，纹理高峰不能把残件挤掉。
+		nmsCandidates(interiorCands, minDistTop, keep, true);
+		nmsCandidates(borderCands, minDistTop, keep, true);
+		coarse.clear();
+		coarse.reserve(interiorCands.size() + borderCands.size());
+		coarse.insert(coarse.end(), interiorCands.begin(), interiorCands.end());
+		coarse.insert(coarse.end(), borderCands.begin(), borderCands.end());
+	}
+	else
+		nmsCandidates(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, false), false);
 
 	std::vector<ShapeCandidate> refined = coarse;
 	for (int layer = top - 1; layer >= stopLayer; --layer)
