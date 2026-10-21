@@ -87,6 +87,22 @@ matcher.setTemplate(templ, mask)   # mask 留外沿和扁位，挖孔和拉丝
 
 NCC 负责把 ROI 放到零件附近；转角用卡尺复核。
 
+## 大图先粗定位
+
+整幅大图跑 NCC 很慢。先用 ORB/SIFT 框出 ROI，再在这块上精匹配，见 [feature.md](feature.md) 的「粗到精定位」。
+
+```python
+param = cvter.CoarseRefineParam()
+param.matcherType = cvter.MatcherType.PATTERN
+param.angle = 0          # 相信粗定位朝向；要转角再加大
+param.margin = 120
+param.stopLayer = 1      # 不要用 2 当加速，大图上会锁错位姿
+loc = cvter.match_coarse_to_fine(gray, templ, mask, param)
+hit = loc.hits[0]        # Center / Angle 已是全图坐标
+```
+
+`stopLayer` 的含义没有变。ROI 视图不用再手动 `ascontiguousarray`：绑定会按 numpy 行步长拷贝。非连续切片以前会让 `match` 返回 0 个命中。
+
 ## C++
 
 ```cpp

@@ -24,6 +24,7 @@
 | 金样比对 / 差分缺陷 | 可选平移（ZNCC/NCC）或 ORB 仿射 / 单应对齐，绝对差分与有符号差分，极性、模糊、ROI / 掩膜，形态学之后取 Blob。不需要 GPU | [golden.md](golden.md) |
 | 常规分割 | 分水岭、距离变换、Canny、切开粘连目标 | [seg.md](seg.md) |
 | 稀疏特征 | ORB。OpenCV 带 SIFT 时同一接口也走 SIFT | [feature.md](feature.md) |
+| 粗到精模板定位 | ORB/SIFT 粗定位，ROI 上 `PATTERN` 或 `SHAPE` 精匹配，命中坐标回到全图 | [feature.md](feature.md) |
 | 读码与 OCR | QR；一维码先 OpenCV、解不出再 zbar；OCR 走 Tesseract（可选） | [code.md](code.md) |
 | 相机标定 | 默认亚像素。多视标定、去畸变、YAML 读写、手眼（`HandEyeMethod.Park`，另有 Tsai / Horaud / Andreff / Daniilidis） | [calib.md](calib.md) |
 

@@ -30,7 +30,7 @@ import cv2
 | 对齐相似度 / 平移定位 | [similarity.md](similarity.md) |
 | 金样比对 / 差分缺陷 | [golden.md](golden.md) |
 | 分水岭 / 距离变换 / Canny | [seg.md](seg.md) |
-| ORB / SIFT | [feature.md](feature.md) |
+| ORB / SIFT，粗到精定位 | [feature.md](feature.md) |
 | 条码 / QR / OCR | [code.md](code.md) |
 | 相机标定 | [calib.md](calib.md) |
 
@@ -396,9 +396,16 @@ hit = cvter.match_features(scene, model, cvter.FeatureDetector.ORB, ratio=0.75, 
 print(hit.found, hit.inliers, hit.corners)   # 4x2，模板四角投到场景
 if cvter.sift_available():
     hit = cvter.match_features(scene, model, cvter.FeatureDetector.SIFT)
+
+param = cvter.CoarseRefineParam()
+param.matcherType = cvter.MatcherType.PATTERN   # SHAPE 时把 angle 设为至少 5
+param.angle = 0                                  # 0 = 只搜 0°
+param.margin = 120
+loc = cvter.match_coarse_to_fine(scene, model, param=param)
+# loc.hits[0] 的点在全图坐标；loc.roi 是精匹配用的矩形；loc.coarse 是特征结果
 ```
 
-见 [feature.md](feature.md)。
+见 [feature.md](feature.md)。不要把 `stopLayer=2` 当成加速。
 
 ---
 
