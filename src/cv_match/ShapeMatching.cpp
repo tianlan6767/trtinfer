@@ -101,7 +101,9 @@ void computeUnitGrad(const cv::Mat& gray, cv::Mat& nx, cv::Mat& ny, cv::Mat& mag
 
 // 出界的模型点直接跳过，不记 0。可见点少于模型的这个比例时，仍用全部点数做分母，
 // 避免只擦到画布一条边就被归一化成高分。大约 68% 还在画面里的残件高于这条线。
-// 68% 还在画面里的残件要高于这条线。再低就会把贴边的纹理归一化成 0.55 左右的假命中。
+// 再低就会把贴边的纹理归一化成 0.55 左右的假命中。
+// 233 上 T11 的可见比例大约 0.62–0.66，末层分大约 0.53，刚好贴着这条线的上侧。
+// 往上提会改用全部点数做分母，0.53 会掉到 0.5 下面。不要往上调。
 constexpr double kMinInFrameFrac = 0.62;
 
 bool inFrame32(const cv::Mat& m, float x, float y)
@@ -132,10 +134,10 @@ bool poseHopeless(double sum, int used, int n, int index, double abortBelow)
 	return best < abortBelow;
 }
 
-// 响应图在贴边会把「旁边任意一条强边」算成高分，浮点粗分不会。
-// 四边这条带改回浮点 scorePose。带宽要盖住顶层去重半径（大约 0.45×模板短边，这块模板约 16px），
-// 否则带外的响应图假峰仍落在残件的去重距离里，精修一层之后把真种子删掉。
-constexpr int kCoarseBorderBand = 24;
+// 响应图在贴边会把旁边的强边收成高分，这条带改回浮点 scorePose。
+// 233 探针：T11 顶层 (6.6, 39) 的最近格点 (6, 38) 已经落在带宽 16 里，浮点粗分大约 0.55–0.61。
+// 带宽不是漏检原因，不要为了这一件再加宽。
+constexpr int kCoarseBorderBand = 16;
 
 bool onCoarseBorder(int x, int y, int rows, int cols, int margin, int band)
 {
@@ -1080,9 +1082,9 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		std::vector<ShapeCandidate> next;
 		const auto& mdl = layers_[layer];
 		double step = angleStepDeg(mdl.edges);
-		// 响应图种子的角度可以偏大约 10°，第一层用 ±10 px、大约 ±12° 找回来。
-		// 贴边种子是浮点粗分，角度和 oriBins=0 一样准。这里若仍用大窗，纹理上的更高分会把残件带走，
-		// 下一层只搜 ±4 px，走不回来，末层分掉到 0.5 下面。
+		// 响应图种子的角度可以偏大约 10°，内部第一层用 ±10 px、大约 ±12° 找回来。
+		// 贴边种子的浮点粗分已经对准。233 上 ±10 px 会把 T11 从 (25, 159)@0.53 拖到 (42, 157)@0.22，
+		// 下一层 ±4 px 走不回来。贴边第一层保持 ±4 px、±3 步。
 		const int rad0 = (quantCoarse && layer == top - 1) ? 10 : 4;
 #pragma omp parallel
 		{

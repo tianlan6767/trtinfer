@@ -1902,6 +1902,119 @@ void testShapeOri16TexturedLeftEdge()
 	expect(countNear(floatHits, partial, 12.0) == 1, "shape ori0-texture finds left edge");
 }
 
+// 贴边弱残件右侧有只在较细一层才明显的强边。第一层若用 ±10 px，峰会漂到大约 +16 px、
+// 分数掉到 0.3 下面；±4 px 应留在真中心附近并且分数过 0.5。不是 233 原图。
+void testShapeOri16BorderRefineDoesNotDrift()
+{
+	using namespace template_matching;
+	const int tw = 144, th = 190;
+	cv::Mat templ(th, tw, CV_8U, cv::Scalar(36));
+	cv::rectangle(templ, {12, 14}, {tw - 14, th - 16}, cv::Scalar(200), 4);
+	cv::rectangle(templ, {30, 36}, {tw / 2 + 4, th / 2}, cv::Scalar(210), cv::FILLED);
+	cv::circle(templ, {tw - 34, 52}, 14, cv::Scalar(180), cv::FILLED);
+	cv::circle(templ, {tw - 42, th - 44}, 9, cv::Scalar(40), cv::FILLED);
+	cv::line(templ, {22, th - 40}, {tw - 20, th - 28}, cv::Scalar(220), 3);
+	cv::Mat mask = cv::Mat::zeros(templ.size(), CV_8U);
+	cv::rectangle(mask, {6, 8}, {tw - 8, th - 10}, cv::Scalar(255), cv::FILLED);
+
+	auto paint = [&](cv::Mat& dst, cv::Point2d c, double angDeg, double gain) {
+		cv::Mat rot;
+		const cv::Point2f pivot((templ.cols - 1) * 0.5f, (templ.rows - 1) * 0.5f);
+		const cv::Mat M = cv::getRotationMatrix2D(pivot, angDeg, 1.0);
+		cv::warpAffine(templ, rot, M, templ.size(), cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(36));
+		const int x0 = (int)std::lround(c.x - (rot.cols - 1) / 2.0);
+		const int y0 = (int)std::lround(c.y - (rot.rows - 1) / 2.0);
+		for (int y = 0; y < rot.rows; ++y)
+		{
+			const int sy = y0 + y;
+			if (sy < 0 || sy >= dst.rows)
+				continue;
+			for (int x = 0; x < rot.cols; ++x)
+			{
+				const int sx = x0 + x;
+				if (sx < 0 || sx >= dst.cols)
+					continue;
+				const int src = rot.at<uchar>(y, x);
+				if (src == 36)
+					continue;
+				int v = 36 + (int)std::lround((src - 36) * gain);
+				if (v < 0)
+					v = 0;
+				if (v > 255)
+					v = 255;
+				dst.at<uchar>(sy, sx) = (uchar)v;
+			}
+		}
+	};
+
+	cv::Mat scene(420, 640, CV_8U, cv::Scalar(36));
+	for (int y = 0; y < scene.rows; y += 4)
+	{
+		uchar* row = scene.ptr<uchar>(y);
+		for (int x = 0; x < scene.cols; x += 5)
+			row[x] = (uchar)(30 + ((x * 13 + y * 7) % 17));
+	}
+	const cv::Point2d partial(26.3, 180);
+	paint(scene, partial, 0.0, 0.55);
+	// 右移 16px 的细轮廓。顶层几乎看不见，第一层 ±10 px 够得着，±4 px 够不着。
+	cv::Mat lure(scene.size(), CV_8U, cv::Scalar(36));
+	paint(lure, cv::Point2d(partial.x + 16.0, partial.y), 0.0, 1.0);
+	for (int y = 0; y < scene.rows; ++y)
+	{
+		for (int x = 0; x < scene.cols; ++x)
+		{
+			const int lv = lure.at<uchar>(y, x);
+			if (lv < 80)
+				continue;
+			const int sv = scene.at<uchar>(y, x);
+			if (std::abs(sv - 36) > 18)
+				continue;
+			scene.at<uchar>(y, x) = (uchar)lv;
+		}
+	}
+
+	MatcherParam param;
+	param.matcherType = MatcherType::SHAPE;
+	param.angle = 180;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 50;
+	param.iouThreshold = 0.4;
+	param.minArea = 256;
+	param.edgeMinMag = 29;
+	param.edgeContrast = 119;
+	param.maxEdgePoints = 320;
+	param.usePolarity = true;
+	param.greediness = 0.9;
+	param.oriBins = 16;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(templ, mask) == 0, "shape ori16-drift setTemplate");
+	std::vector<MatchResult> hits;
+	const auto t0 = std::chrono::steady_clock::now();
+	matcher->match(scene, hits);
+	const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+	std::cout << "    shape ori16-drift ±180 find " << ms << " ms n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " ang=" << h.Angle << " c=(" << h.Center.x << "," << h.Center.y << ")"
+				  << std::endl;
+	expect(countNear(hits, partial, 10.0) == 1, "shape ori16-drift stays on the left edge");
+	const MatchResult* edge = nearestHit(hits, partial);
+	expect(edge && edge->Score >= 0.5, "shape ori16-drift score passes 0.5");
+	if (edge)
+		expect(edge->Center.x < partial.x + 10.0, "shape ori16-drift does not walk right");
+
+	param.oriBins = 0;
+	param.angle = 30;
+	auto floatMatcher = GetMatcher(param);
+	expect(floatMatcher && floatMatcher->setTemplate(templ, mask) == 0, "shape ori0-drift setTemplate");
+	std::vector<MatchResult> floatHits;
+	floatMatcher->match(scene, floatHits);
+	std::cout << "    shape ori0-drift n=" << floatHits.size() << std::endl;
+	for (const auto& h : floatHits)
+		std::cout << "      sc=" << h.Score << " ang=" << h.Angle << " c=(" << h.Center.x << "," << h.Center.y << ")"
+				  << std::endl;
+	expect(countNear(floatHits, partial, 10.0) == 1, "shape ori0-drift finds left edge");
+}
+
 }  // namespace
 
 int main()
@@ -1935,6 +2048,7 @@ int main()
 	testShapeOri16WideLeftEdgePartial();
 	testShapeOri16T11SizedLeftEdge();
 	testShapeOri16TexturedLeftEdge();
+	testShapeOri16BorderRefineDoesNotDrift();
 	testShapeFaintRingThird();
 	testPatternOneQuadrantOcclusion();
 	testBoardPoseUnchanged();
