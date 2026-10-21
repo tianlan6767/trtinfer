@@ -346,6 +346,27 @@ void buildOriResponse16(const cv::Mat& nx, const cv::Mat& ny, const cv::Mat& mag
 		else
 			raw.copyTo(spreaded);
 	}
+	// 16 张图叠在一起时，每个模型点要跳到另一块远处的内存。收成每个像素 16 档之后，
+	// 一次粗搜只碰模板盖住的那一块。数值与按档分面相同。
+	if (w > 0 && h > 0)
+	{
+		std::vector<float> planar;
+		planar.swap(out.data);
+		out.data.resize(planar.size());
+		const size_t plane = (size_t)w * (size_t)h;
+		float* dst = out.data.data();
+		const float* src = planar.data();
+		for (int y = 0; y < h; ++y)
+		{
+			for (int x = 0; x < w; ++x)
+			{
+				float* pix = dst + ((size_t)y * (size_t)w + (size_t)x) * 16u;
+				const size_t pixi = (size_t)y * (size_t)w + (size_t)x;
+				for (int b = 0; b < 16; ++b)
+					pix[b] = src[(size_t)b * plane + pixi];
+			}
+		}
+	}
 }
 
 std::vector<MapPoint> makeMapPoints(const std::vector<ShapeEdgePt>& model)
@@ -775,7 +796,6 @@ double scorePoseMap(const std::vector<MapPoint>& model, const OriResponse16& res
 		return 0.0;
 	const int w = resp.width;
 	const int h = resp.height;
-	const size_t planeStride = (size_t)w * (size_t)h;
 	const float* base = resp.data.data();
 	double sum = 0.0;
 	int used = 0;
@@ -795,7 +815,7 @@ double scorePoseMap(const std::vector<MapPoint>& model, const OriResponse16& res
 		float best = 0.f;
 		const int ml = model[i].bin;
 		if ((unsigned)ml < 16u)
-			best = base[(size_t)ml * planeStride + (size_t)py * (size_t)w + (size_t)px];
+			best = base[(((size_t)py * (size_t)w + (size_t)px) << 4) + (size_t)ml];
 		sum += (double)best;
 		++used;
 		// 过线的位置占大多数时，每个点都做无望判断不划算。隔几个点查一次，结论不变。
@@ -1629,7 +1649,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		// 内部响应图种子第一层仍是 ±10 px、大约 ±12°，和 8e6638d 一样。
 		std::vector<ShapeCandidate> slots(refined.size());
 		std::vector<char> slotOk(refined.size(), 0);
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(dynamic, 2)
 		for (int ci = 0; ci < (int)refined.size(); ++ci)
 		{
 			const auto& c0 = refined[ci];
@@ -1810,7 +1830,29 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 					peaks[worst].scale = objScale;
 				}
 			};
-			for (int pass = 0; pass < (widenPos ? 2 : 1); ++pass)
+			// 末层中心的完整分低于 0.18 时，±4 窗口到不了 0.5。弱贴边残件的中心仍高于这条线。
+			// 只用于 ori16、阈值 0.5。更低的阈值，或全程浮点，中心偏低的种子仍可能在邻格过线。
+			bool poorCenter = false;
+			if (layer == stopLayer && quantCoarse && matchParam_.scoreThreshold >= 0.5)
+			{
+				const auto probeRot = rotateModel(mdl.edges, c0.angle);
+				const auto probeModel = scaleSearch_ ? scaleEdges(probeRot, c0.scale) : probeRot;
+				const double probe = scorePose(probeModel, nx[layer], ny[layer], mag[layer],
+											   (float)matchParam_.edgeMinMag, cx0, cy0, polarity, greed,
+											   abortMinScore(0.18, -1.0, greed), true, 1, &packed[layer]);
+				if (probe < 0.18)
+				{
+					poorCenter = true;
+					bestS = probe;
+					best.score = probe;
+					best.cx = cx0;
+					best.cy = cy0;
+					best.angle = c0.angle;
+					if (scaleSearch_)
+						best.scale = c0.scale;
+				}
+			}
+			for (int pass = 0; pass < (poorCenter ? 0 : (widenPos ? 2 : 1)); ++pass)
 			{
 			if (pass == 1 && bestS >= matchParam_.scoreThreshold)
 				break;
