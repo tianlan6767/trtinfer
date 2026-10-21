@@ -292,7 +292,8 @@ void spreadEdgePoints(std::vector<EdgeCand>& cand, int maxPts, std::vector<Shape
 	edges.swap(picked);
 }
 
-// 沿法向对梯度幅值做抛物线插值，边缘点最多挪半个像素。只在 16 档路径上用。
+// 沿法向对梯度幅值做抛物线插值，边缘点最多挪半个像素。
+// 不要和 oriBins=16 绑在一起：挪点会改模型，末层浮点分就和全程浮点不是同一套边缘。
 void nudgeSubpixel(EdgeCand& e, const cv::Mat& mag, float cx, float cy)
 {
 	const float x = e.dx + cx;
@@ -703,7 +704,9 @@ int ShapeMatcher::setTemplate(const cv::Mat& templateImage, const cv::Mat& mask)
 		double layerHigh = contrast > mag ? contrast / std::pow(1.6, i) : layerMag;
 		if (layerHigh < layerMag)
 			layerHigh = layerMag;
-		const bool subpixel = matchParam_.oriBins == 16;
+		// 16 档只用于顶层粗搜。亚像素挪点会改每一层的模型点，末层仍拿这些点做浮点分，
+		// 贴边残件上可以把大约 0.53 的分压到 0.36。默认不挪。
+		const bool subpixel = false;
 		if (!extractEdges(pyr[i], msk, layerMag, layerHigh, matchParam_.maxEdgePoints, layers_[i].edges, subpixel))
 		{
 			if (i == 0)
