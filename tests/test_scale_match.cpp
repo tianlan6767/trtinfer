@@ -917,6 +917,150 @@ void testRotatedAsymmetric()
 	}
 }
 
+// 欠曝时一块象限混进噪声，灰度 NCC 会掉进旧的「缺一口」区间。整块瓶盖仍要留下。
+void testPatternExposureQuadrantKept()
+{
+	using namespace template_matching;
+	cv::Mat cap(160, 160, CV_8U, cv::Scalar(70));
+	cv::circle(cap, {80, 80}, 58, cv::Scalar(160), cv::FILLED);
+	cv::circle(cap, {58, 60}, 14, cv::Scalar(230), cv::FILLED);
+	cv::rectangle(cap, {36, 98}, {124, 120}, cv::Scalar(25), cv::FILLED);
+	cv::putText(cap, "C", {68, 92}, cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(40), 2);
+	cv::setRNGSeed(7);
+	cv::Mat noise(160, 160, CV_8U);
+	cv::randu(noise, 0, 255);
+	cv::GaussianBlur(noise, noise, cv::Size(0, 0), 1.5);
+	const double mix = 0.8;
+	cv::Mat dark = cap.clone();
+	for (int y = 0; y < dark.rows; ++y)
+	{
+		for (int x = 0; x < dark.cols; ++x)
+		{
+			double v = cap.at<uchar>(y, x) * 0.5 + 8.0;
+			if (y < 80 && x >= 80)
+				v = (1.0 - mix) * v + mix * noise.at<uchar>(y, x) * 0.4;
+			dark.at<uchar>(y, x) = (uchar)std::max(0.0, std::min(255.0, v));
+		}
+	}
+	cv::Mat scene(360, 400, CV_8U, cv::Scalar(12));
+	dark.copyTo(scene(cv::Rect(60, 50, 160, 160)));
+	MatcherParam param;
+	param.matcherType = MatcherType::PATTERN;
+	param.angle = 0;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 2;
+	param.iouThreshold = 0.5;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(cap) == 0, "pattern exposure-quadrant setTemplate");
+	std::vector<MatchResult> hits;
+	matcher->match(scene, hits);
+	std::cout << "    pattern exposure-quadrant n=" << hits.size();
+	if (!hits.empty())
+		std::cout << " sc=" << hits[0].Score;
+	std::cout << std::endl;
+	expect((int)hits.size() == 1, "pattern exposure-quadrant keeps the cap");
+	const MatchResult* r = best(hits);
+	expect(r && r->Score >= 0.5, "pattern exposure-quadrant score");
+	expect(r && std::hypot(r->Center.x - 140.0, r->Center.y - 130.0) < 8.0, "pattern exposure-quadrant center");
+}
+
+// 整圈加一块高光仍是整圈。缺了一大段的弧要丢掉，哪怕全局分在 0.65–0.80。
+void testPatternSpecularRingDropsOpenArc()
+{
+	using namespace template_matching;
+	const int d = 110;
+	cv::Mat ring(d, d, CV_8U, cv::Scalar(50));
+	cv::circle(ring, {d / 2, d / 2}, 40, cv::Scalar(200), 7);
+	cv::Mat scene(280, 820, CV_8U, cv::Scalar(50));
+	const cv::Point2d fullC(20 + d / 2.0, 40 + d / 2.0);
+	const cv::Point2d specC(180 + d / 2.0, 40 + d / 2.0);
+	ring.copyTo(scene(cv::Rect(20, 40, d, d)));
+	cv::Mat spec = ring.clone();
+	cv::circle(spec, {d / 2 + 28, d / 2 - 22}, 14, cv::Scalar(250), cv::FILLED);
+	spec.copyTo(scene(cv::Rect(180, 40, d, d)));
+	cv::ellipse(scene, {415, 95}, {40, 40}, 0, 10, 250, cv::Scalar(200), 7);
+	cv::ellipse(scene, {595, 95}, {40, 40}, 0, 20, 200, cv::Scalar(200), 7);
+
+	MatcherParam param;
+	param.matcherType = MatcherType::PATTERN;
+	param.angle = 12;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 8;
+	param.iouThreshold = 0.5;
+	param.minArea = 256;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(ring) == 0, "pattern specular-ring setTemplate");
+	std::vector<MatchResult> hits;
+	matcher->match(scene, hits);
+	std::cout << "    pattern specular-ring n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " c=(" << h.Center.x << "," << h.Center.y << ")" << std::endl;
+	expect((int)hits.size() == 2, "pattern specular-ring keeps two full rings");
+	expect(countNear(hits, fullC, 10.0) == 1, "pattern specular-ring full copy");
+	expect(countNear(hits, specC, 10.0) == 1, "pattern specular-ring highlighted copy");
+}
+
+// 花纹上的弱梯度以前能锁成第四个圆。真圆点边缘很强，仍应是 3 个。
+void testShapeMottleLockDropped()
+{
+	using namespace template_matching;
+	auto disk = [](int d, int bg, int fg) {
+		cv::Mat img(d, d, CV_8U, cv::Scalar(bg));
+		cv::circle(img, {d / 2, d / 2}, d / 2 - 3, cv::Scalar(fg), cv::FILLED);
+		cv::circle(img, {d / 2 + d / 6, d / 2 - d / 8}, std::max(3, d / 10), cv::Scalar(std::min(255, bg + 80)), cv::FILLED);
+		return img;
+	};
+	cv::Mat templ = disk(120, 140, 40);
+	cv::setRNGSeed(3);
+	cv::Mat scene(560, 720, CV_8U);
+	cv::randu(scene, 110, 170);
+	cv::GaussianBlur(scene, scene, cv::Size(0, 0), 1.2);
+	auto paint = [&](const cv::Mat& src, int cx, int cy) {
+		const int x = cx - src.cols / 2;
+		const int y = cy - src.rows / 2;
+		src.copyTo(scene(cv::Rect(x, y, src.cols, src.rows)));
+	};
+	const cv::Point2d truth[] = {{180, 160}, {480, 180}, {300, 420}};
+	paint(templ, 180, 160);
+	cv::Mat mid;
+	cv::resize(disk(120, 140, 55), mid, cv::Size(), 0.9, 0.9, cv::INTER_AREA);
+	paint(mid, 480, 180);
+	cv::Mat small;
+	cv::resize(disk(120, 140, 70), small, cv::Size(), 0.8, 0.8, cv::INTER_AREA);
+	cv::GaussianBlur(small, small, cv::Size(0, 0), 1.4);
+	const int x = 300 - small.cols / 2;
+	const int y = 420 - small.rows / 2;
+	for (int r = 0; r < small.rows; ++r)
+		for (int c = 0; c < small.cols; ++c)
+			if (small.at<uchar>(r, c) < 120)
+				scene.at<uchar>(y + r, x + c) = small.at<uchar>(r, c);
+
+	MatcherParam param;
+	param.matcherType = MatcherType::SHAPE;
+	param.angle = 25;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 8;
+	param.iouThreshold = 0.5;
+	param.minArea = 256;
+	param.edgeMinMag = 12;
+	param.maxEdgePoints = 400;
+	param.usePolarity = false;
+	param.greediness = 0.8;
+	param.minScale = 0.8;
+	param.maxScale = 1.0;
+	param.scaleStep = 0.05;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(templ) == 0, "shape mottle setTemplate");
+	std::vector<MatchResult> hits;
+	matcher->match(scene, hits);
+	std::cout << "    shape mottle n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " scale=" << h.Scale << " c=(" << h.Center.x << "," << h.Center.y << ")" << std::endl;
+	expect((int)hits.size() == 3, "shape mottle drops texture locks");
+	for (const auto& p : truth)
+		expect(countNear(hits, p, 16.0) == 1, "shape mottle one hit per dot");
+}
+
 void testPatternBrightnessLikeExposure()
 {
 	using namespace template_matching;
@@ -962,6 +1106,9 @@ int main()
 	testPatternWeakThirdOnNoise();
 	testPatternAlmostRingRejected();
 	testShapeDotSidelobeDropped();
+	testPatternExposureQuadrantKept();
+	testPatternSpecularRingDropsOpenArc();
+	testShapeMottleLockDropped();
 	testPatternOneQuadrantOcclusion();
 	testBoardPoseUnchanged();
 	testRotatedAsymmetric();
