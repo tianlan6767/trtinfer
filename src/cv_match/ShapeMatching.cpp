@@ -133,8 +133,9 @@ bool poseHopeless(double sum, int used, int n, int index, double abortBelow)
 }
 
 // 响应图在贴边会把「旁边任意一条强边」算成高分，浮点粗分不会。
-// 四边这条带改回浮点 scorePose，名额和内部纹理分开，避免弱残件排不进前几百个峰。
-constexpr int kCoarseBorderBand = 16;
+// 四边这条带改回浮点 scorePose。带宽要盖住顶层去重半径（大约 0.45×模板短边，这块模板约 16px），
+// 否则带外的响应图假峰仍落在残件的去重距离里，精修一层之后把真种子删掉。
+constexpr int kCoarseBorderBand = 24;
 
 bool onCoarseBorder(int x, int y, int rows, int cols, int margin, int band)
 {
@@ -790,6 +791,29 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCo
 		cands.push_back(a.c);
 }
 
+// 贴边种子和内部种子分开去重。内部响应图峰可以在下一层浮点分掉到阈值下，
+// 但不能在那之前把贴边残件从名单里抹掉。
+void nmsKeepOrigins(std::vector<ShapeCandidate>& cands, double minDist, int maxCount, bool blendInterior)
+{
+	std::vector<ShapeCandidate> border;
+	std::vector<ShapeCandidate> interior;
+	border.reserve(cands.size() / 8 + 1);
+	interior.reserve(cands.size());
+	for (const auto& c : cands)
+	{
+		if (c.fromBorder)
+			border.push_back(c);
+		else
+			interior.push_back(c);
+	}
+	nmsCandidates(interior, minDist, maxCount, blendInterior);
+	nmsCandidates(border, minDist, maxCount, false);
+	cands.clear();
+	cands.reserve(interior.size() + border.size());
+	cands.insert(cands.end(), interior.begin(), interior.end());
+	cands.insert(cands.end(), border.begin(), border.end());
+}
+
 }  // namespace
 
 ShapeMatcher::ShapeMatcher(const MatcherParam& param)
@@ -976,6 +1000,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 						c.cy = y;
 						c.angle = angles[ai];
 						c.score = sc;
+						c.fromBorder = border;
 						local.push_back(c);
 					}
 				}
@@ -1027,6 +1052,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 						c.angle = angles[ai];
 						c.score = sc;
 						c.scale = objScale;
+						c.fromBorder = border;
 						local.push_back(c);
 					}
 				}
@@ -1042,29 +1068,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	const double minDistTop = 0.45 * std::max(4.0, topSpan);
 	if (quantCoarse)
 	{
-		// 尺度搜索的边距和上面非尺度分支用的是同一个顶层步长，分类时对齐。
-		const int classMargin = scaleSearch_ ? borderMargin(pyr[top].rows, pyr[top].cols, kMapStride) : margin;
-		std::vector<ShapeCandidate> borderCands;
-		std::vector<ShapeCandidate> interiorCands;
-		borderCands.reserve(coarse.size() / 8 + 1);
-		interiorCands.reserve(coarse.size());
-		for (const auto& c : coarse)
-		{
-			const int x = (int)std::lround(c.cx);
-			const int y = (int)std::lround(c.cy);
-			if (onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, classMargin, kCoarseBorderBand))
-				borderCands.push_back(c);
-			else
-				interiorCands.push_back(c);
-		}
-		const int keep = coarseKeepCount(matchParam_.maxCount, true);
-		// 贴边浮点分往往只有 0.5 上下，内部响应图可以整片是 1。分开去重，纹理高峰不能把残件挤掉。
-		nmsCandidates(interiorCands, minDistTop, keep, true);
-		nmsCandidates(borderCands, minDistTop, keep, true);
-		coarse.clear();
-		coarse.reserve(interiorCands.size() + borderCands.size());
-		coarse.insert(coarse.end(), interiorCands.begin(), interiorCands.end());
-		coarse.insert(coarse.end(), borderCands.begin(), borderCands.end());
+		// 贴边浮点分往往只有 0.5 上下，内部响应图可以整片是 1。分开去重，而且贴边不再把同分邻居收成质心。
+		nmsKeepOrigins(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, true), true);
 	}
 	else
 		nmsCandidates(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, false), false);
@@ -1075,7 +1080,9 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		std::vector<ShapeCandidate> next;
 		const auto& mdl = layers_[layer];
 		double step = angleStepDeg(mdl.edges);
-		// 质心之后顶层误差大约 2px，翻到下一层是 4px。贴边残件的响应图峰值还会再偏出去，第一层用 ±10。
+		// 响应图种子的角度可以偏大约 10°，第一层用 ±10 px、大约 ±12° 找回来。
+		// 贴边种子是浮点粗分，角度和 oriBins=0 一样准。这里若仍用大窗，纹理上的更高分会把残件带走，
+		// 下一层只搜 ±4 px，走不回来，末层分掉到 0.5 下面。
 		const int rad0 = (quantCoarse && layer == top - 1) ? 10 : 4;
 #pragma omp parallel
 		{
@@ -1090,15 +1097,15 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			ShapeCandidate best = c0;
 			best.cx = cx0;
 			best.cy = cy0;
-			const int rad = rad0;
+			const int rad = c0.fromBorder ? 4 : rad0;
 			std::vector<double> angs;
 			if (matchParam_.angle < 1e-6)
 				angs.push_back(0.0);
 			else
 			{
 				// 响应图在只露出大约 2/3 的件上，粗分最高的角度可以偏到真角一侧约 10°。
-				// 第一层用浮点分把这个偏差找回来；更下面的层仍是 ±3 步。
-				const int kMax = (quantCoarse && layer == top - 1)
+				// 第一层用浮点分把这个偏差找回来；贴边浮点种子和更下面的层仍是 ±3 步。
+				const int kMax = (quantCoarse && layer == top - 1 && !c0.fromBorder)
 									 ? std::max(3, (int)std::ceil(12.0 / std::max(step, 1e-3)))
 									 : 3;
 				for (int k = -kMax; k <= kMax; ++k)
@@ -1165,7 +1172,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 					if (!dup)
 						tryScales.push_back(s);
 				}
-				const int radS = rad0;
+				const int radS = rad;
 				for (double ang : angs)
 				{
 					const auto rotated = rotateModel(mdl.edges, ang);
@@ -1208,14 +1215,20 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		const double layerSpan = std::min((double)std::min(layers_[layer].width, layers_[layer].height),
 										  2.0 * (double)modelRadius(mdl.edges));
 		const double md = 0.45 * std::max(4.0, layerSpan);
-		nmsCandidates(next, md, refineKeepCount(matchParam_.maxCount, quantCoarse));
+		if (quantCoarse)
+			nmsKeepOrigins(next, md, refineKeepCount(matchParam_.maxCount, true), false);
+		else
+			nmsCandidates(next, md, refineKeepCount(matchParam_.maxCount, false));
 		refined.swap(next);
 	}
 
 	const double fullSpan = std::min((double)std::min(layers_[stopLayer].width, layers_[stopLayer].height),
 									 2.0 * (double)modelRadius(layers_[stopLayer].edges));
-	nmsCandidates(refined, 0.45 * std::max(4.0, fullSpan),
-				  coarseKeepCount(matchParam_.maxCount, quantCoarse));
+	const double fullDist = 0.45 * std::max(4.0, fullSpan);
+	if (quantCoarse)
+		nmsKeepOrigins(refined, fullDist, coarseKeepCount(matchParam_.maxCount, true), false);
+	else
+		nmsCandidates(refined, fullDist, coarseKeepCount(matchParam_.maxCount, false));
 	const int pyrScale = 1 << stopLayer;
 	std::vector<MatchResult> packed;
 	packed.reserve(refined.size());

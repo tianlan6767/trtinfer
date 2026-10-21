@@ -1790,6 +1790,118 @@ void testShapeOri16T11SizedLeftEdge()
 	run(0, 20, "ori0");
 }
 
+// 压过对比度的左缘残件，背景是确定性细边，不是空白底上的高对比件。
+// oriBins=16、±180°、29/119 必须留下 x≈26 这一件。不是 233 原图。
+void testShapeOri16TexturedLeftEdge()
+{
+	using namespace template_matching;
+	const int tw = 144, th = 190;
+	cv::Mat templ(th, tw, CV_8U, cv::Scalar(36));
+	cv::rectangle(templ, {12, 14}, {tw - 14, th - 16}, cv::Scalar(200), 4);
+	cv::rectangle(templ, {30, 36}, {tw / 2 + 4, th / 2}, cv::Scalar(210), cv::FILLED);
+	cv::circle(templ, {tw - 34, 52}, 14, cv::Scalar(180), cv::FILLED);
+	cv::circle(templ, {tw - 42, th - 44}, 9, cv::Scalar(40), cv::FILLED);
+	cv::line(templ, {22, th - 40}, {tw - 20, th - 28}, cv::Scalar(220), 3);
+	cv::Mat mask = cv::Mat::zeros(templ.size(), CV_8U);
+	cv::rectangle(mask, {6, 8}, {tw - 8, th - 10}, cv::Scalar(255), cv::FILLED);
+
+	auto paint = [&](cv::Mat& scene, cv::Point2d c, double angDeg) {
+		cv::Mat rot;
+		const cv::Point2f pivot((templ.cols - 1) * 0.5f, (templ.rows - 1) * 0.5f);
+		const cv::Mat M = cv::getRotationMatrix2D(pivot, angDeg, 1.0);
+		cv::warpAffine(templ, rot, M, templ.size(), cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(36));
+		const int x0 = (int)std::lround(c.x - (rot.cols - 1) / 2.0);
+		const int y0 = (int)std::lround(c.y - (rot.rows - 1) / 2.0);
+		for (int y = 0; y < rot.rows; ++y)
+		{
+			const int sy = y0 + y;
+			if (sy < 0 || sy >= scene.rows)
+				continue;
+			for (int x = 0; x < rot.cols; ++x)
+			{
+				const int sx = x0 + x;
+				if (sx < 0 || sx >= scene.cols)
+					continue;
+				const uchar v = rot.at<uchar>(y, x);
+				if (v != 36)
+					scene.at<uchar>(sy, sx) = v;
+			}
+		}
+	};
+
+	cv::Mat scene(964, 1288, CV_8U, cv::Scalar(42));
+	for (int y = 20; y < scene.rows; y += 36)
+	{
+		for (int x = 24; x < scene.cols; x += 44)
+		{
+			const int shade = 90 + ((x * 3 + y * 5) % 60);
+			cv::line(scene, {x, y}, {x + 12, y + ((x / 44) % 5) - 2}, cv::Scalar(shade), 1);
+		}
+	}
+	const cv::Point2d partial(26.3, 156);
+	const cv::Point2d interior(700, 480);
+	paint(scene, partial, 0.0);
+	paint(scene, interior, 12.0);
+	// 左缘再压一截对比度，并叠一点固定噪声。
+	for (int y = 0; y < scene.rows; ++y)
+	{
+		uchar* row = scene.ptr<uchar>(y);
+		for (int x = 0; x < 120 && x < scene.cols; ++x)
+		{
+			const int n = ((x * 17 + y * 29) % 11) - 5;
+			int v = (int)std::lround((row[x] - 42) * 0.45 + 42 + n);
+			if (v < 0)
+				v = 0;
+			if (v > 255)
+				v = 255;
+			row[x] = (uchar)v;
+		}
+	}
+	MatcherParam param;
+	param.matcherType = MatcherType::SHAPE;
+	param.angle = 180;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 200;
+	param.iouThreshold = 0.4;
+	param.minArea = 256;
+	param.edgeMinMag = 29;
+	param.edgeContrast = 119;
+	param.maxEdgePoints = 320;
+	param.usePolarity = true;
+	param.greediness = 0.9;
+	param.oriBins = 16;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(templ, mask) == 0, "shape ori16-texture setTemplate");
+	std::vector<MatchResult> hits;
+	const auto t0 = std::chrono::steady_clock::now();
+	matcher->match(scene, hits);
+	const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+	std::cout << "    shape ori16-texture ±180 find " << ms << " ms n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " ang=" << h.Angle << " c=(" << h.Center.x << "," << h.Center.y << ")"
+				  << std::endl;
+	expect(countNear(hits, partial, 12.0) == 1, "shape ori16-texture finds left edge");
+	const MatchResult* edge = nearestHit(hits, partial);
+	expect(edge && edge->Score >= 0.5, "shape ori16-texture left edge score");
+	if (edge)
+	{
+		double dAng = std::fabs(edge->Angle);
+		if (dAng > 180.0)
+			dAng = 360.0 - dAng;
+		expect(dAng <= 8.0, "shape ori16-texture left edge angle");
+	}
+	expect(countNear(hits, interior, 12.0) == 1, "shape ori16-texture keeps interior");
+
+	param.oriBins = 0;
+	param.angle = 20;
+	auto floatMatcher = GetMatcher(param);
+	expect(floatMatcher && floatMatcher->setTemplate(templ, mask) == 0, "shape ori0-texture setTemplate");
+	std::vector<MatchResult> floatHits;
+	floatMatcher->match(scene, floatHits);
+	std::cout << "    shape ori0-texture n=" << floatHits.size() << std::endl;
+	expect(countNear(floatHits, partial, 12.0) == 1, "shape ori0-texture finds left edge");
+}
+
 }  // namespace
 
 int main()
@@ -1822,6 +1934,7 @@ int main()
 	testShapeOri16Stride4KeepsWideHits();
 	testShapeOri16WideLeftEdgePartial();
 	testShapeOri16T11SizedLeftEdge();
+	testShapeOri16TexturedLeftEdge();
 	testShapeFaintRingThird();
 	testPatternOneQuadrantOcclusion();
 	testBoardPoseUnchanged();
