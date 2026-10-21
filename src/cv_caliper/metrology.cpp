@@ -37,6 +37,16 @@ double distancePoints(cv::Point2d a, cv::Point2d b)
 	return std::hypot(a.x - b.x, a.y - b.y);
 }
 
+double segmentLength(cv::Point2d a, cv::Point2d b)
+{
+	return distancePoints(a, b);
+}
+
+cv::Point2d midpoint(cv::Point2d a, cv::Point2d b)
+{
+	return cv::Point2d(0.5 * (a.x + b.x), 0.5 * (a.y + b.y));
+}
+
 double distancePointToLine(cv::Point2d p, cv::Point2d a, cv::Point2d b)
 {
 	bool ok = false;
@@ -85,6 +95,80 @@ bool intersectLines(cv::Point2d a1, cv::Point2d a2, cv::Point2d b1, cv::Point2d 
 	const double t = (qp.x * s.y - qp.y * s.x) / denom;
 	out = cv::Point2d(a1.x + r.x * t, a1.y + r.y * t);
 	return std::isfinite(out.x) && std::isfinite(out.y);
+}
+
+PointHit intersectLinesAt(cv::Point2d a1, cv::Point2d a2, cv::Point2d b1, cv::Point2d b2)
+{
+	PointHit hit;
+	hit.found = intersectLines(a1, a2, b1, b2, hit.point);
+	return hit;
+}
+
+PointHit footOfPerpendicular(cv::Point2d p, cv::Point2d a, cv::Point2d b, bool clampToSegment)
+{
+	PointHit hit;
+	const cv::Point2d d(b.x - a.x, b.y - a.y);
+	const double L2 = d.x * d.x + d.y * d.y;
+	if (L2 < 1e-24) {
+		return hit;
+	}
+	double t = ((p.x - a.x) * d.x + (p.y - a.y) * d.y) / L2;
+	if (clampToSegment) {
+		t = std::clamp(t, 0.0, 1.0);
+	}
+	hit.point = cv::Point2d(a.x + d.x * t, a.y + d.y * t);
+	hit.found = std::isfinite(hit.point.x) && std::isfinite(hit.point.y);
+	return hit;
+}
+
+double distanceParallelLines(cv::Point2d a1, cv::Point2d a2, cv::Point2d b1, cv::Point2d b2, double angleTolDeg)
+{
+	const double ang = angleBetweenLines(a1, a2, b1, b2);
+	if (!std::isfinite(ang) || ang > angleTolDeg) {
+		return std::numeric_limits<double>::quiet_NaN();
+	}
+	const cv::Point2d midB(0.5 * (b1.x + b2.x), 0.5 * (b1.y + b2.y));
+	return distancePointToLine(midB, a1, a2);
+}
+
+double distanceCircleCenters(cv::Point2d c0, cv::Point2d c1)
+{
+	return distancePoints(c0, c1);
+}
+
+double signedDistancePointToCircle(cv::Point2d p, cv::Point2d center, double radius)
+{
+	if (!(radius >= 0.0) || !std::isfinite(radius)) {
+		return std::numeric_limits<double>::quiet_NaN();
+	}
+	return std::hypot(p.x - center.x, p.y - center.y) - radius;
+}
+
+double distancePointToCircle(cv::Point2d p, cv::Point2d center, double radius)
+{
+	const double s = signedDistancePointToCircle(p, center, radius);
+	return std::isfinite(s) ? std::abs(s) : s;
+}
+
+double signedDistanceCircleToLine(cv::Point2d center, double radius, cv::Point2d a, cv::Point2d b)
+{
+	if (!(radius >= 0.0) || !std::isfinite(radius)) {
+		return std::numeric_limits<double>::quiet_NaN();
+	}
+	const double d = distancePointToLine(center, a, b);
+	if (!std::isfinite(d)) {
+		return d;
+	}
+	return d - radius;
+}
+
+double distanceCircleToLine(cv::Point2d center, double radius, cv::Point2d a, cv::Point2d b)
+{
+	const double s = signedDistanceCircleToLine(center, radius, a, b);
+	if (!std::isfinite(s)) {
+		return s;
+	}
+	return s > 0.0 ? s : 0.0;
 }
 
 LineFit fitLine(const std::vector<cv::Point2d>& points)
@@ -137,6 +221,8 @@ LineFit fitLine(const std::vector<cv::Point2d>& points)
 	fit.length = tmax - tmin;
 	fit.rms = std::sqrt(acc / static_cast<double>(points.size()));
 	fit.angle = std::atan2(dir.y, dir.x) * 180.0 / kPi;
+	fit.inliers = points;
+	fit.numInliers = fit.numPoints;
 	return fit;
 }
 

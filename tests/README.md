@@ -8,6 +8,7 @@
 make test-blob
 make test-caliper
 make test-rect
+make test-measure
 make test-scale
 make test-match
 make test-shape
@@ -30,6 +31,7 @@ make test-viz
 | `test_shape_match_viz.py` | 形状匹配，含两个尺度 |
 | `test_caliper_viz.py` | 直线、定向卡尺、圆 |
 | `test_rect_metrology_viz.py` | 矩形和量测 |
+| `test_measure_viz.py` | 几何、多边 / 双边 / 弧段 / 开口、拟合与形位、包围尺寸、标定尺寸 |
 | `test_similarity_viz.py` | 对齐 NCC/ZNCC/SSIM，平移定位 |
 | `test_golden_viz.py` | 金样比对：极性、ROI/掩膜、平移、模糊、ORB 仿射/单应 |
 | `test_seg_viz.py` | 距离变换、Canny、分水岭切开粘连圆 |

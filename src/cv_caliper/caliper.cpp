@@ -105,12 +105,86 @@ struct ProfileEdge {
     double contrast = 0.0;
 };
 
+ProfileEdge refineProfilePeak(const std::vector<float>& deriv, int best, float score)
+{
+    ProfileEdge out;
+    if (best < 1 || best + 1 >= static_cast<int>(deriv.size())) {
+        return out;
+    }
+    const float a = deriv[best - 1];
+    const float b = deriv[best];
+    const float c = deriv[best + 1];
+    double sub = 0.0;
+    const float denom = a - 2.f * b + c;
+    if (std::abs(denom) > 1e-6f) {
+        sub = 0.5 * static_cast<double>(a - c) / static_cast<double>(denom);
+        sub = std::clamp(sub, -0.75, 0.75);
+    }
+    out.found = true;
+    out.offset = static_cast<double>(best) + sub;
+    out.contrast = static_cast<double>(score);
+    return out;
+}
+
+std::vector<ProfileEdge> findProfilePeaks(const std::vector<float>& profile, const CaliperParam& param)
+{
+    std::vector<ProfileEdge> peaks;
+    const int n = static_cast<int>(profile.size());
+    if (n < 5) {
+        return peaks;
+    }
+    std::vector<float> deriv(n, 0.f);
+    for (int i = 1; i < n - 1; ++i) {
+        deriv[i] = 0.5f * (profile[i + 1] - profile[i - 1]);
+    }
+    auto scoreAt = [&](int i) -> float {
+        const float g = deriv[i];
+        if (param.polarity == Polarity::LightToDark) {
+            return -g;
+        }
+        if (param.polarity == Polarity::DarkToLight) {
+            return g;
+        }
+        return std::abs(g);
+    };
+    const float th = static_cast<float>(param.contrast);
+    for (int i = 1; i < n - 1; ++i) {
+        const float s = scoreAt(i);
+        if (s < th) {
+            continue;
+        }
+        if (s < scoreAt(i - 1) || s < scoreAt(i + 1)) {
+            continue;
+        }
+        ProfileEdge edge = refineProfilePeak(deriv, i, s);
+        if (!edge.found) {
+            continue;
+        }
+        if (!peaks.empty() && edge.offset - peaks.back().offset < 2.5) {
+            if (edge.contrast > peaks.back().contrast) {
+                peaks.back() = edge;
+            }
+        } else {
+            peaks.push_back(edge);
+        }
+    }
+    return peaks;
+}
+
 ProfileEdge findProfileEdge(const std::vector<float>& profile, const CaliperParam& param)
 {
     ProfileEdge out;
     const int n = static_cast<int>(profile.size());
     if (n < 5) {
         return out;
+    }
+    if (param.select == EdgeSelect::Nth || param.select == EdgeSelect::All) {
+        const std::vector<ProfileEdge> peaks = findProfilePeaks(profile, param);
+        const int idx = (param.select == EdgeSelect::All) ? 0 : param.edgeIndex;
+        if (idx < 0 || idx >= static_cast<int>(peaks.size())) {
+            return out;
+        }
+        return peaks[idx];
     }
     std::vector<float> deriv(n, 0.f);
     for (int i = 1; i < n - 1; ++i) {
@@ -410,6 +484,166 @@ double profileOffsetToSearch(double index, double searchHalf, int n)
     return -searchHalf + step * index;
 }
 
+LineResult fitPointsToLine(const std::vector<cv::Point2d>& pts, const CaliperParam& param)
+{
+    LineResult empty;
+    empty.points = pts;
+    empty.numPoints = static_cast<int>(pts.size());
+    if (static_cast<int>(pts.size()) < std::max(3, param.minPoints)) {
+        return empty;
+    }
+    cv::Point2d mean, dir;
+    double rms = 0.0;
+    if (!fitLineSvd(pts, mean, dir, rms)) {
+        return empty;
+    }
+    auto inliers = rejectLineOutliers(pts, mean, dir, param.outlierRatio);
+    if (static_cast<int>(inliers.size()) < std::max(3, param.minPoints / 2)) {
+        inliers = pts;
+    }
+    if (!fitLineSvd(inliers, mean, dir, rms)) {
+        return empty;
+    }
+    return packLine(pts, inliers, mean, dir, rms);
+}
+
+CircleResult fitPointsToCircle(const std::vector<cv::Point2d>& pts,
+                               cv::Point2d nominalCenter,
+                               double search,
+                               const CaliperParam& param)
+{
+    CircleResult empty;
+    empty.points = pts;
+    empty.numPoints = static_cast<int>(pts.size());
+    const int need = std::max(4, param.minPoints);
+    if (static_cast<int>(pts.size()) < need) {
+        return empty;
+    }
+    cv::Point2d c;
+    double r = 0.0, rms = 0.0;
+    if (!fitCircleAlgebraic(pts, c, r, rms)) {
+        return empty;
+    }
+    auto inliers = rejectCircleOutliers(pts, c, r, param.outlierRatio);
+    if (static_cast<int>(inliers.size()) < std::max(4, param.minPoints / 2)) {
+        inliers = pts;
+    }
+    if (!fitCircleAlgebraic(inliers, c, r, rms)) {
+        return empty;
+    }
+    if (std::hypot(c.x - nominalCenter.x, c.y - nominalCenter.y) > std::max(10.0, 1.5 * search)) {
+        empty.inliers = inliers;
+        empty.numInliers = static_cast<int>(inliers.size());
+        return empty;
+    }
+    if (!(rms < 4.0) || !(r > 1.0)) {
+        empty.inliers = inliers;
+        empty.numInliers = static_cast<int>(inliers.size());
+        return empty;
+    }
+    CircleResult out;
+    out.found = std::isfinite(r) && std::isfinite(rms);
+    out.center = c;
+    out.radius = r;
+    out.rms = rms;
+    out.points = pts;
+    out.inliers = inliers;
+    out.numPoints = static_cast<int>(pts.size());
+    out.numInliers = static_cast<int>(inliers.size());
+    return out;
+}
+
+std::vector<std::vector<cv::Point2d>> collectLinearPeaks(const cv::Mat& gray,
+                                                        cv::Point2d center,
+                                                        double phi,
+                                                        double length1,
+                                                        double length2,
+                                                        const CaliperParam& param)
+{
+    std::vector<std::vector<cv::Point2d>> spokes;
+    if (gray.empty() || length1 < 4.0 || length2 < 3.0) {
+        return spokes;
+    }
+    const cv::Point2d lengthDir(std::cos(phi), std::sin(phi));
+    const cv::Point2d searchDir(std::sin(phi), -std::cos(phi));
+    const int nCal = autoCount(length1, param, 8, 400);
+    const auto kernel = gaussKernel(param.sigma);
+    spokes.reserve(nCal);
+    for (int i = 0; i < nCal; ++i) {
+        const double t = (nCal == 1) ? 0.0 : (-length1 + (2.0 * length1) * i / (nCal - 1));
+        const cv::Point2d origin(center.x + lengthDir.x * t, center.y + lengthDir.y * t);
+        auto profile = sampleSearchProfile(gray, origin, searchDir, lengthDir, length2, param.projection);
+        profile = conv1d(profile, kernel);
+        const std::vector<ProfileEdge> peaks = findProfilePeaks(profile, param);
+        std::vector<cv::Point2d> pts;
+        pts.reserve(peaks.size());
+        for (const auto& edge : peaks) {
+            const double s = profileOffsetToSearch(edge.offset, length2, static_cast<int>(profile.size()));
+            pts.emplace_back(origin.x + searchDir.x * s, origin.y + searchDir.y * s);
+        }
+        spokes.push_back(std::move(pts));
+    }
+    return spokes;
+}
+
+std::vector<std::vector<cv::Point2d>> collectRadialPeaks(const cv::Mat& gray,
+                                                        cv::Point2d center,
+                                                        double radius,
+                                                        double search,
+                                                        double startDeg,
+                                                        double endDeg,
+                                                        const CaliperParam& param)
+{
+    std::vector<std::vector<cv::Point2d>> spokes;
+    if (gray.empty() || radius < 4.0 || search < 2.0) {
+        return spokes;
+    }
+    double a0 = startDeg;
+    double a1 = endDeg;
+    if (a1 < a0) {
+        a1 += 360.0;
+    }
+    const double span = std::max(1.0, a1 - a0);
+    const double arcLen = radius * span * kPi / 180.0;
+    int nCal = param.numCalipers;
+    if (nCal <= 0) {
+        nCal = static_cast<int>(std::floor(arcLen / std::max(1, param.stride))) + 1;
+    }
+    nCal = std::clamp(nCal, span >= 350.0 ? 12 : 6, 720);
+    const auto kernel = gaussKernel(param.sigma);
+    spokes.reserve(nCal);
+    for (int i = 0; i < nCal; ++i) {
+        const double deg = a0 + span * i / std::max(1, nCal - 1);
+        const double rad = deg * kPi / 180.0;
+        const cv::Point2d radial(std::cos(rad), std::sin(rad));
+        const cv::Point2d tangent(-radial.y, radial.x);
+        const cv::Point2d searchDir = param.radialInward ? cv::Point2d(-radial.x, -radial.y) : radial;
+        const cv::Point2d origin(center.x + radial.x * radius, center.y + radial.y * radius);
+        auto profile = sampleSearchProfile(gray, origin, searchDir, tangent, search, param.projection);
+        profile = conv1d(profile, kernel);
+        const std::vector<ProfileEdge> peaks = findProfilePeaks(profile, param);
+        std::vector<cv::Point2d> pts;
+        pts.reserve(peaks.size());
+        for (const auto& edge : peaks) {
+            const double s = profileOffsetToSearch(edge.offset, search, static_cast<int>(profile.size()));
+            pts.emplace_back(origin.x + searchDir.x * s, origin.y + searchDir.y * s);
+        }
+        spokes.push_back(std::move(pts));
+    }
+    return spokes;
+}
+
+double unwrapAngle(double angle, double ref)
+{
+    while (angle - ref > kPi) {
+        angle -= 2.0 * kPi;
+    }
+    while (ref - angle > kPi) {
+        angle += 2.0 * kPi;
+    }
+    return angle;
+}
+
 }  // namespace
 
 LineResult findLineOriented(const cv::Mat& image,
@@ -690,6 +924,303 @@ RectResult findRectangleBox(const cv::Mat& image,
     }
     const cv::Point2d center(0.5 * (x0 + x1), 0.5 * (y0 + y1));
     return findRectangle(image, center, x1 - x0, y1 - y0, 0.0, search, param);
+}
+
+namespace
+{
+
+std::vector<std::vector<cv::Point2d>> groupSpokes(const std::vector<std::vector<cv::Point2d>>& spokes)
+{
+    std::vector<std::vector<cv::Point2d>> groups;
+    for (const auto& spoke : spokes) {
+        if (static_cast<int>(groups.size()) < static_cast<int>(spoke.size())) {
+            groups.resize(spoke.size());
+        }
+        for (int k = 0; k < static_cast<int>(spoke.size()); ++k) {
+            groups[k].push_back(spoke[k]);
+        }
+    }
+    return groups;
+}
+
+std::vector<double> pairWidths(const std::vector<std::vector<cv::Point2d>>& spokes, int i0)
+{
+    std::vector<double> samples;
+    if (i0 < 0) {
+        return samples;
+    }
+    for (const auto& spoke : spokes) {
+        const int i1 = i0 + 1;
+        if (i1 >= static_cast<int>(spoke.size())) {
+            continue;
+        }
+        samples.push_back(std::hypot(spoke[i1].x - spoke[i0].x, spoke[i1].y - spoke[i0].y));
+    }
+    return samples;
+}
+
+double sampleRms(const std::vector<double>& samples, double width)
+{
+    if (samples.empty() || !std::isfinite(width)) {
+        return 0.0;
+    }
+    double acc = 0.0;
+    for (double s : samples) {
+        const double d = s - width;
+        acc += d * d;
+    }
+    return std::sqrt(acc / static_cast<double>(samples.size()));
+}
+
+}  // namespace
+
+MultiLineResult findEdgesOriented(const cv::Mat& image,
+                                  cv::Point2d center,
+                                  double phi,
+                                  double length1,
+                                  double length2,
+                                  const CaliperParam& param)
+{
+    MultiLineResult out;
+    const cv::Mat gray = toGray(image);
+    const auto groups = groupSpokes(collectLinearPeaks(gray, center, phi, length1, length2, param));
+    for (int k = 0; k < static_cast<int>(groups.size()); ++k) {
+        IndexedLine item;
+        item.index = k;
+        item.line = fitPointsToLine(groups[k], param);
+        if (item.line.numPoints <= 0) {
+            continue;
+        }
+        out.edges.push_back(item);
+        if (item.line.found) {
+            out.found = true;
+        }
+    }
+    return out;
+}
+
+MultiLineResult findEdgesRect(const cv::Mat& image,
+                              double x0, double y0, double x1, double y1,
+                              bool searchHorizontal,
+                              const CaliperParam& param)
+{
+    if (x1 < x0) {
+        std::swap(x0, x1);
+    }
+    if (y1 < y0) {
+        std::swap(y0, y1);
+    }
+    const cv::Point2d center(0.5 * (x0 + x1), 0.5 * (y0 + y1));
+    if (searchHorizontal) {
+        return findEdgesOriented(image, center, kPi / 2.0, 0.5 * (y1 - y0), 0.5 * (x1 - x0), param);
+    }
+    return findEdgesOriented(image, center, 0.0, 0.5 * (x1 - x0), 0.5 * (y1 - y0), param);
+}
+
+MultiCircleResult findCircleEdges(const cv::Mat& image,
+                                  cv::Point2d center,
+                                  double radius,
+                                  double search,
+                                  double startDeg,
+                                  double endDeg,
+                                  const CaliperParam& param)
+{
+    MultiCircleResult out;
+    const cv::Mat gray = toGray(image);
+    const auto groups = groupSpokes(collectRadialPeaks(gray, center, radius, search, startDeg, endDeg, param));
+    for (int k = 0; k < static_cast<int>(groups.size()); ++k) {
+        IndexedCircle item;
+        item.index = k;
+        item.circle = fitPointsToCircle(groups[k], center, search, param);
+        if (item.circle.numPoints <= 0) {
+            continue;
+        }
+        out.edges.push_back(item);
+        if (item.circle.found) {
+            out.found = true;
+        }
+    }
+    return out;
+}
+
+ArcResult findArc(const cv::Mat& image,
+                  cv::Point2d center,
+                  double radius,
+                  double search,
+                  double startDeg,
+                  double endDeg,
+                  const CaliperParam& param)
+{
+    ArcResult arc;
+    const CircleResult hit = findCircle(image, center, radius, search, startDeg, endDeg, param);
+    arc.center = hit.center;
+    arc.radius = hit.radius;
+    arc.rms = hit.rms;
+    arc.points = hit.points;
+    arc.inliers = hit.inliers;
+    arc.numPoints = hit.numPoints;
+    arc.numInliers = hit.numInliers;
+    arc.found = hit.found;
+    if (!hit.found || hit.inliers.size() < 3) {
+        arc.found = false;
+        return arc;
+    }
+    double a0 = startDeg;
+    double a1 = endDeg;
+    if (a1 < a0) {
+        a1 += 360.0;
+    }
+    const double requested = a1 - a0;
+    if (requested >= 350.0) {
+        arc.spanDeg = 360.0;
+        arc.arcLength = 2.0 * kPi * hit.radius;
+        arc.chord = 0.0;
+        arc.startDeg = startDeg;
+        arc.endDeg = startDeg + 360.0;
+        arc.chordStart = hit.center;
+        arc.chordEnd = hit.center;
+        return arc;
+    }
+    const double mid = 0.5 * (a0 + a1) * kPi / 180.0;
+    double lo = 1e300;
+    double hi = -1e300;
+    cv::Point2d startPt = hit.inliers.front();
+    cv::Point2d endPt = hit.inliers.front();
+    for (const auto& p : hit.inliers) {
+        const double u = unwrapAngle(std::atan2(p.y - hit.center.y, p.x - hit.center.x), mid);
+        if (u < lo) {
+            lo = u;
+            startPt = p;
+        }
+        if (u > hi) {
+            hi = u;
+            endPt = p;
+        }
+    }
+    arc.spanDeg = (hi - lo) * 180.0 / kPi;
+    arc.startDeg = lo * 180.0 / kPi;
+    arc.endDeg = arc.startDeg + arc.spanDeg;
+    arc.arcLength = hit.radius * std::max(0.0, hi - lo);
+    arc.chord = std::hypot(endPt.x - startPt.x, endPt.y - startPt.y);
+    arc.chordStart = startPt;
+    arc.chordEnd = endPt;
+    if (!(arc.spanDeg > 1.0) || !std::isfinite(arc.arcLength)) {
+        arc.found = false;
+    }
+    return arc;
+}
+
+DualWidthResult measureDualWidth(const cv::Mat& image,
+                                 cv::Point2d center,
+                                 double phi,
+                                 double length1,
+                                 double length2,
+                                 const CaliperParam& param)
+{
+    DualWidthResult out;
+    CaliperParam all = param;
+    all.select = EdgeSelect::All;
+    const MultiLineResult edges = findEdgesOriented(image, center, phi, length1, length2, all);
+    for (const auto& edge : edges.edges) {
+        if (edge.index == param.edgeIndex) {
+            out.edge0 = edge.line;
+        } else if (edge.index == param.edgeIndex + 1) {
+            out.edge1 = edge.line;
+        }
+    }
+    const auto samples = pairWidths(collectLinearPeaks(toGray(image), center, phi, length1, length2, param),
+                                    param.edgeIndex);
+    out.samples = samples;
+    out.numSamples = static_cast<int>(samples.size());
+    if (!out.edge0.found || !out.edge1.found) {
+        return out;
+    }
+    const double parallel = metrology::distanceParallelLines(out.edge0.p1, out.edge0.p2, out.edge1.p1, out.edge1.p2, 12.0);
+    const double fallback = metrology::distanceBetweenLines(out.edge0.p1, out.edge0.p2, out.edge1.p1, out.edge1.p2);
+    out.angle = metrology::angleBetweenLines(out.edge0.p1, out.edge0.p2, out.edge1.p1, out.edge1.p2);
+    out.width = std::isfinite(parallel) ? parallel : fallback;
+    out.rms = samples.empty() ? 0.5 * (out.edge0.rms + out.edge1.rms) : sampleRms(samples, out.width);
+    const int need = std::max(4, param.minPoints / 2);
+    out.found = std::isfinite(out.width) && out.width > 0.5 && out.numSamples >= need;
+    return out;
+}
+
+DualWidthResult measureRadialWidth(const cv::Mat& image,
+                                   cv::Point2d center,
+                                   double radius,
+                                   double search,
+                                   double startDeg,
+                                   double endDeg,
+                                   const CaliperParam& param)
+{
+    DualWidthResult out;
+    out.radial = true;
+    CaliperParam all = param;
+    all.select = EdgeSelect::All;
+    const MultiCircleResult edges = findCircleEdges(image, center, radius, search, startDeg, endDeg, all);
+    for (const auto& edge : edges.edges) {
+        if (edge.index == param.edgeIndex) {
+            out.circle0 = edge.circle;
+        } else if (edge.index == param.edgeIndex + 1) {
+            out.circle1 = edge.circle;
+        }
+    }
+    const auto samples = pairWidths(
+        collectRadialPeaks(toGray(image), center, radius, search, startDeg, endDeg, param), param.edgeIndex);
+    out.samples = samples;
+    out.numSamples = static_cast<int>(samples.size());
+    if (!out.circle0.found || !out.circle1.found) {
+        return out;
+    }
+    out.width = std::abs(out.circle1.radius - out.circle0.radius);
+    out.rms = samples.empty() ? 0.5 * (out.circle0.rms + out.circle1.rms) : sampleRms(samples, out.width);
+    out.angle = 0.0;
+    const int need = std::max(4, param.minPoints / 2);
+    out.found = std::isfinite(out.width) && out.width > 0.5 && out.numSamples >= need;
+    return out;
+}
+
+GapResult gapBetween(const LineResult& a, const LineResult& b)
+{
+    GapResult g;
+    g.first = a;
+    g.second = b;
+    if (!a.found || !b.found) {
+        return g;
+    }
+    g.angle = metrology::angleBetweenLines(a.p1, a.p2, b.p1, b.p2);
+    g.parallel = std::isfinite(g.angle) && g.angle <= 12.0;
+    double width = metrology::distanceParallelLines(a.p1, a.p2, b.p1, b.p2, 12.0);
+    if (!std::isfinite(width)) {
+        width = metrology::distanceBetweenLines(a.p1, a.p2, b.p1, b.p2);
+    }
+    const auto foot = metrology::footOfPerpendicular(a.center, b.p1, b.p2, false);
+    g.p1 = a.center;
+    g.p2 = foot.found ? foot.point : b.center;
+    g.width = width;
+    g.rms = 0.5 * (a.rms + b.rms);
+    g.found = std::isfinite(width) && width > 0.5;
+    return g;
+}
+
+GapResult measureGap(const cv::Mat& image,
+                     cv::Point2d center,
+                     double phi,
+                     double length1,
+                     double halfGap,
+                     double search,
+                     const CaliperParam& param)
+{
+    GapResult empty;
+    if (image.empty() || length1 < 4.0 || halfGap < 1.0 || search < 2.0) {
+        return empty;
+    }
+    const cv::Point2d across(std::sin(phi), -std::cos(phi));
+    const cv::Point2d leftMid(center.x - across.x * halfGap, center.y - across.y * halfGap);
+    const cv::Point2d rightMid(center.x + across.x * halfGap, center.y + across.y * halfGap);
+    const LineResult first = findLineOriented(image, leftMid, phi, length1, search, param);
+    const LineResult second = findLineOriented(image, rightMid, phi + kPi, length1, search, param);
+    return gapBetween(first, second);
 }
 
 }  // namespace caliper

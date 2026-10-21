@@ -1,4 +1,5 @@
 #include "bind_extra.h"
+#include "cv_measure/bind.h"
 
 #include "pybind_cvmat.hpp"
 
@@ -314,4 +315,5 @@ void bindExtra(py::module_& m)
 	m.attr("DICT_APRILTAG_36h10") = 19;
 	m.attr("DICT_APRILTAG_36h11") = 20;
 #endif
+	bindMeasure(m);
 }
