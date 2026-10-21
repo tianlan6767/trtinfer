@@ -9,7 +9,7 @@ make test-blob
 make test-caliper
 make test-rect
 make test-measure
-make test-scale   # 只编 cv_match。尺度，以及合成的多实例圆点 / 圆环重复 / PATTERN 弧误检 / 大框边距里的邻点 / 单板 / 加亮 NCC
+make test-scale   # 只编 cv_match。尺度，多实例圆点，残弧，空白边对不上的弱实例，圆点旁瓣，单板，加亮 NCC
 make test-match
 make test-shape
 make test-golden

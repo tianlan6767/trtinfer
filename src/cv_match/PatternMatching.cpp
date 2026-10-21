@@ -47,15 +47,70 @@ namespace template_matching {
 			return num / (sa[0] * sb[0] * (double)a.total());
 		}
 
-		// 半圈弧能在全局 NCC 上过 0.5，但有一半象限和模板对不上。整圈、加亮、只挡一个象限的不删。
-		bool partialPatternHit(const Mat& sceneIn, const Mat& templIn, const Mat& maskIn, const MatchResult& hit)
+		double nccMasked(const Mat& a, const Mat& b, const Mat& mask)
 		{
-			if (!(hit.Score < 0.85))
-				return false;
+			if (a.empty() || b.empty() || a.size() != b.size() || mask.size() != a.size())
+				return -1.0;
+			double sa = 0.0, sb = 0.0;
+			int n = 0;
+			for (int y = 0; y < a.rows; ++y)
+			{
+				const uchar* pa = a.ptr<uchar>(y);
+				const uchar* pb = b.ptr<uchar>(y);
+				const uchar* pm = mask.ptr<uchar>(y);
+				for (int x = 0; x < a.cols; ++x)
+				{
+					if (!pm[x])
+						continue;
+					sa += pa[x];
+					sb += pb[x];
+					++n;
+				}
+			}
+			if (n < 24)
+				return -1.0;
+			const double ma = sa / n, mb = sb / n;
+			double va = 0.0, vb = 0.0, cov = 0.0;
+			for (int y = 0; y < a.rows; ++y)
+			{
+				const uchar* pa = a.ptr<uchar>(y);
+				const uchar* pb = b.ptr<uchar>(y);
+				const uchar* pm = mask.ptr<uchar>(y);
+				for (int x = 0; x < a.cols; ++x)
+				{
+					if (!pm[x])
+						continue;
+					const double da = pa[x] - ma;
+					const double db = pb[x] - mb;
+					va += da * da;
+					vb += db * db;
+					cov += da * db;
+				}
+			}
+			if (va < 16.0 * n || vb < 1.0)
+				return -1.0;
+			return cov / std::sqrt(va * vb);
+		}
+
+		struct AlignedQuads
+		{
+			bool valid = false;
+			int present = 0;
+			int bad = 0;
+			double worst = 1.0;
+			double second = 1.0;
+			double best = 0.0;
+			double infoNcc = -1.0;
+			int infoQuads = 0;
+		};
+
+		AlignedQuads alignQuads(const Mat& sceneIn, const Mat& templIn, const Mat& maskIn, const MatchResult& hit)
+		{
+			AlignedQuads out;
 			const double w = std::hypot(hit.RightTop.x - hit.LeftTop.x, hit.RightTop.y - hit.LeftTop.y);
 			const double h = std::hypot(hit.LeftBottom.x - hit.LeftTop.x, hit.LeftBottom.y - hit.LeftTop.y);
 			if (w < 12.0 || h < 12.0)
-				return false;
+				return out;
 			int W = std::max(12, std::min(180, (int)std::lround(w)));
 			int H = std::max(12, std::min(180, (int)std::lround(h)));
 			Point2f src[3] = {
@@ -65,24 +120,29 @@ namespace template_matching {
 			Point2f dst[3] = {{0.f, 0.f}, {(float)(W - 1), 0.f}, {0.f, (float)(H - 1)}};
 			Mat affine = getAffineTransform(src, dst);
 			if (affine.empty())
-				return false;
+				return out;
 			Mat scene = asGray(sceneIn);
-			Mat templ = asGray(templIn);
-			if (scene.empty() || templ.empty())
-				return false;
+			Mat templSrc = asGray(templIn);
+			if (scene.empty() || templSrc.empty())
+				return out;
 			Mat aligned;
 			warpAffine(scene, aligned, affine, Size(W, H), INTER_LINEAR, BORDER_REPLICATE);
-			Mat resizedTempl;
-			const int interp = (W * (double)H < templ.cols * (double)templ.rows) ? INTER_AREA : INTER_LINEAR;
-			resize(templ, resizedTempl, Size(W, H), 0, 0, interp);
-			Mat mask;
+			if (aligned.type() != CV_8U)
+				aligned.convertTo(aligned, CV_8U);
+			Mat templ;
+			const int interp = (W * (double)H < templSrc.cols * (double)templSrc.rows) ? INTER_AREA : INTER_LINEAR;
+			resize(templSrc, templ, Size(W, H), 0, 0, interp);
+			if (templ.type() != CV_8U)
+				templ.convertTo(templ, CV_8U);
+			Mat userMask;
 			if (!maskIn.empty())
 			{
 				Mat maskGray = maskIn.channels() == 1 ? maskIn : asGray(maskIn);
-				resize(maskGray, mask, Size(W, H), 0, 0, INTER_NEAREST);
+				resize(maskGray, userMask, Size(W, H), 0, 0, INTER_NEAREST);
 			}
-			int present = 0;
-			int bad = 0;
+
+			double qncc[4];
+			int qn = 0;
 			for (int qy = 0; qy < 2; ++qy)
 			{
 				for (int qx = 0; qx < 2; ++qx)
@@ -94,32 +154,121 @@ namespace template_matching {
 					if (x1 <= x0 || y1 <= y0)
 						continue;
 					Rect roi(x0, y0, x1 - x0, y1 - y0);
-					if (!mask.empty() && mean(mask(roi))[0] < 80.0)
+					if (!userMask.empty() && mean(userMask(roi))[0] < 80.0)
 						continue;
 					Scalar ignored, templStd, sceneStd;
-					meanStdDev(resizedTempl(roi), ignored, templStd);
+					meanStdDev(templ(roi), ignored, templStd);
 					if (templStd[0] < 5.0)
 						continue;
 					meanStdDev(aligned(roi), ignored, sceneStd);
-					++present;
-					// 0.35：整圈的弱象限仍高于此（合成图上大约 0.40），半圈弧的错位象限低于此。
-					if (sceneStd[0] < 3.0 || nccOf(resizedTempl(roi), aligned(roi)) < 0.35)
-						++bad;
+					const double q = nccOf(templ(roi), aligned(roi));
+					qncc[qn++] = q;
+					++out.present;
+					if (sceneStd[0] < 3.0 || q < 0.35)
+						++out.bad;
 				}
 			}
-			return present >= 3 && bad * 2 >= present;
+			if (qn > 0)
+			{
+				std::sort(qncc, qncc + qn);
+				out.worst = qncc[0];
+				out.second = qn >= 2 ? qncc[1] : qncc[0];
+				out.best = qncc[qn - 1];
+			}
+
+			// 只在没人给 mask 时，用模板边框估计背景，拿非背景像素再打一次分。
+			// 大空白边对不上时，全局 NCC 会掉到阈值下，物体本身仍然对齐。
+			if (userMask.empty())
+			{
+				const int border = std::max(2, std::min(W, H) / 12);
+				double bgSum = 0.0;
+				int bgN = 0;
+				for (int y = 0; y < H; ++y)
+				{
+					const uchar* row = templ.ptr<uchar>(y);
+					for (int x = 0; x < W; ++x)
+					{
+						if (x < border || y < border || x >= W - border || y >= H - border)
+						{
+							bgSum += row[x];
+							++bgN;
+						}
+					}
+				}
+				const double bg = bgN > 0 ? bgSum / bgN : 0.0;
+				Mat info(H, W, CV_8U, Scalar(0));
+				for (int y = 0; y < H; ++y)
+				{
+					const uchar* row = templ.ptr<uchar>(y);
+					uchar* mi = info.ptr<uchar>(y);
+					for (int x = 0; x < W; ++x)
+						if (std::abs((int)row[x] - (int)std::lround(bg)) > 22)
+							mi[x] = 255;
+				}
+				const int infoCount = countNonZero(info);
+				if (infoCount >= 80 && infoCount >= (int)(0.04 * W * H))
+				{
+					out.infoNcc = nccMasked(templ, aligned, info);
+					for (int qy = 0; qy < 2; ++qy)
+					{
+						for (int qx = 0; qx < 2; ++qx)
+						{
+							Rect roi(qx * W / 2, qy * H / 2, (qx == 0 ? W / 2 : W - W / 2), (qy == 0 ? H / 2 : H - H / 2));
+							if (roi.width < 2 || roi.height < 2)
+								continue;
+							if (countNonZero(info(roi)) < 12)
+								continue;
+							const double q = nccMasked(templ(roi), aligned(roi), info(roi));
+							if (q >= 0.55)
+								++out.infoQuads;
+						}
+					}
+				}
+			}
+			out.valid = true;
+			return out;
 		}
 
-		void dropPartialPatternHits(vector<MatchResult>& hits, const Mat& scene, const Mat& templ, const Mat& mask)
+		// 缺一口的弧：只有一个象限偏弱（大约 0.25–0.70），其余象限仍然高。
+		// 整圈四个象限接近。只挡死一个象限时，那个象限接近 0，不在这个区间里。
+		// 旁边另一颗点落进空白边时，往往有两个象限一起变差，次差也低，这里不删。
+		bool partialFromQuads(const AlignedQuads& q)
+		{
+			if (!q.valid)
+				return false;
+			if (q.present >= 3 && q.bad * 2 >= q.present)
+				return true;
+			if (q.present >= 3 && q.worst >= 0.22 && q.worst < 0.72 && q.second >= 0.70 && (q.best - q.worst) > 0.28)
+				return true;
+			return false;
+		}
+
+		void refinePatternHits(vector<MatchResult>& hits, const Mat& scene, const Mat& templ, const Mat& mask,
+							   double scoreThreshold)
 		{
 			if (hits.empty() || scene.empty() || templ.empty())
 				return;
+			const double rescueFloor = std::max(0.30, scoreThreshold * 0.82);
 			vector<MatchResult> kept;
 			kept.reserve(hits.size());
-			for (const MatchResult& hit : hits)
+			for (MatchResult hit : hits)
 			{
-				if (!partialPatternHit(scene, templ, mask, hit))
+				if (hit.Score < rescueFloor)
+					continue;
+				AlignedQuads q = alignQuads(scene, templ, mask, hit);
+				if (partialFromQuads(q))
+					continue;
+				if (hit.Score + 1e-9 >= scoreThreshold)
+				{
 					kept.push_back(hit);
+					continue;
+				}
+				// 全局分刚低于阈值，但非背景像素在至少三个象限都对齐：这是弱的完整实例，不是残弧。
+				if (q.valid && q.infoQuads >= 3 && q.infoNcc >= scoreThreshold)
+				{
+					hit.Score = q.infoNcc;
+					kept.push_back(hit);
+				}
 			}
 			hits.swap(kept);
 		}
@@ -794,7 +943,7 @@ namespace template_matching {
 				const double maxSide = std::max(side1, side2);
 				const double centerDist = norm(rect1.center - rect2.center);
 				// 大模板的空白边把旁边较小的实例包进去时，两个都留。尺寸接近的重叠仍按原来的比例删。
-				if (centerDist >= 0.45 * minSide && maxSide > minSide * 1.18)
+				if (centerDist >= 0.45 * minSide && maxSide > minSide * 1.10)
 					continue;
 				vector<Point2f> vecInterSec;
 				int iInterSecType = rotatedRectangleIntersection(rect1, rect2, vecInterSec);
@@ -873,9 +1022,9 @@ namespace template_matching {
 	}
 
 	void FinishPatternHits(vector<MatchResult>& hits, const Mat& scene, const Mat& templ, const Mat& mask,
-						   double maxOverlap, int maxCount)
+						   double scoreThreshold, double maxOverlap, int maxCount)
 	{
-		dropPartialPatternHits(hits, scene, templ, mask);
+		refinePatternHits(hits, scene, templ, mask, scoreThreshold);
 		SuppressOverlap(hits, maxOverlap, maxCount);
 	}
 
@@ -1137,7 +1286,11 @@ namespace template_matching {
 						}
 						//次像素估計
 					}
-					if (vecNewMatchParameter[iMaxScoreIndex].dMatchScore < vecLayerScore[iLayer])
+					// 最细一层放到略低于阈值，好让「空白边对不上、物体本身对齐」的弱实例活到后面的补救。
+					const double layerGate = (iLayer == iStopLayer)
+						? std::max(0.30, matchParam_.scoreThreshold * 0.82)
+						: vecLayerScore[iLayer];
+					if (vecNewMatchParameter[iMaxScoreIndex].dMatchScore < layerGate)
 						break;
 					//次像素估計
 					if (bSubPixelEstimation
@@ -1189,7 +1342,7 @@ namespace template_matching {
 
 			}
 		}
-		FilterWithScore(&vecAllResult, matchParam_.scoreThreshold);
+		FilterWithScore(&vecAllResult, std::max(0.30, matchParam_.scoreThreshold * 0.82));
 
 		//最後濾掉重疊
 		iDstW = pTemplData->vecPyramid[iStopLayer].cols * (iStopLayer == 0 ? 1 : 2);
@@ -1286,7 +1439,7 @@ namespace template_matching {
 			for (MatchResult& r : matchResults)
 				r.Scale = 1.0;
 			FinishPatternHits(matchResults, image, templateImage_, maskForQuads,
-							  matchParam_.iouThreshold, matchParam_.maxCount);
+							  matchParam_.scoreThreshold, matchParam_.iouThreshold, matchParam_.maxCount);
 			return (int)matchResults.size();
 		}
 
@@ -1313,7 +1466,8 @@ namespace template_matching {
 		}
 		if (!anyOk)
 			return lastErr;
-		FinishPatternHits(all, image, templateImage_, maskForQuads, matchParam_.iouThreshold, matchParam_.maxCount);
+		FinishPatternHits(all, image, templateImage_, maskForQuads,
+						  matchParam_.scoreThreshold, matchParam_.iouThreshold, matchParam_.maxCount);
 		matchResults.swap(all);
 		return (int)matchResults.size();
 	}

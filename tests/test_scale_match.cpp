@@ -600,7 +600,7 @@ void testOverlapKeepsDifferentSizeNeighbor()
 	{
 		std::vector<MatchResult> hits = {
 			axisBox(0, 0, 80, 0.90, 1.0),
-			axisBox(50, 0, 80, 0.55, 1.0),
+			axisBox(72, 0, 80, 0.55, 1.0),
 		};
 		BaseMatcher::suppressMatchOverlap(hits, 0.5, 8, true);
 		expect((int)hits.size() == 2, "same-scale separated hits both stay");
@@ -613,9 +613,169 @@ void testOverlapKeepsDifferentSizeNeighbor()
 		BaseMatcher::suppressMatchOverlap(hits, 0.5, 8, true);
 		expect((int)hits.size() == 1, "same center still collapses to one");
 	}
+	{
+		// 同尺度、中心距落在 0.4 和 0.65 倍边长之间、低分贴在高分旁边。旧规则留着它。
+		std::vector<MatchResult> hits = {
+			axisBox(0, 0, 100, 0.95, 1.0),
+			axisBox(55, 0, 100, 0.65, 1.0),
+		};
+		BaseMatcher::suppressMatchOverlap(hits, 0.5, 8, true);
+		expect((int)hits.size() == 1, "near same-scale weak sidelobe is dropped");
+		expect(hits.size() == 1 && hits[0].Score > 0.9, "near sidelobe keeps the stronger hit");
+	}
 }
 
 // 只挡掉一个象限时，其余象限仍对齐，不能当成半圈弧删掉。
+// 模板空白边很大，第三颗较小的点周围背景和模板对不上，全局 NCC 落在 0.5 下面。物体本身仍对齐，应补回来。
+void testPatternWeakThirdOnNoise()
+{
+	using namespace template_matching;
+	const int box = 200;
+	const int rad = 28;
+	cv::Mat templ(box, box, CV_8U, cv::Scalar(180));
+	cv::circle(templ, cv::Point(box / 2, box / 2), rad, cv::Scalar(40), cv::FILLED, cv::LINE_8);
+	cv::circle(templ, cv::Point(box / 2 - 8, box / 2 - 6), 5, cv::Scalar(230), cv::FILLED, cv::LINE_8);
+	cv::Mat canvas(640, 720, CV_8U);
+	cv::randu(canvas, 20, 235);
+	auto paint = [&](double scale, int cx, int cy, bool full) {
+		cv::Mat scaled;
+		cv::resize(templ, scaled, cv::Size(), scale, scale, cv::INTER_AREA);
+		const int x = cx - scaled.cols / 2;
+		const int y = cy - scaled.rows / 2;
+		if (full)
+		{
+			scaled.copyTo(canvas(cv::Rect(x, y, scaled.cols, scaled.rows)));
+			return;
+		}
+		for (int r = 0; r < scaled.rows; ++r)
+		{
+			for (int c = 0; c < scaled.cols; ++c)
+			{
+				if (std::abs((int)scaled.at<uchar>(r, c) - 180) > 25)
+					canvas.at<uchar>(y + r, x + c) = scaled.at<uchar>(r, c);
+			}
+		}
+	};
+	const cv::Point2d a(180, 180);
+	const cv::Point2d b(480, 200);
+	const cv::Point2d c(250, 480);
+	paint(1.0, (int)a.x, (int)a.y, true);
+	paint(0.9, (int)b.x, (int)b.y, true);
+	paint(0.8, (int)c.x, (int)c.y, false);
+
+	MatcherParam param;
+	param.matcherType = MatcherType::PATTERN;
+	param.angle = 5;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 6;
+	param.iouThreshold = 0.5;
+	param.minArea = 64;
+	param.minScale = 0.75;
+	param.maxScale = 1.0;
+	param.scaleStep = 0.05;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(templ) == 0, "pattern weak-third setTemplate");
+	std::vector<MatchResult> hits;
+	matcher->match(canvas, hits);
+	std::cout << "    pattern weak-third n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " scale=" << h.Scale << " c=(" << h.Center.x << "," << h.Center.y << ")" << std::endl;
+	expect((int)hits.size() == 3, "pattern weak-third keeps the sub-threshold dot");
+	expect(countNear(hits, a, 12.0) == 1, "pattern weak-third dot A");
+	expect(countNear(hits, b, 12.0) == 1, "pattern weak-third dot B");
+	expect(countNear(hits, c, 12.0) == 1, "pattern weak-third dot C");
+	const MatchResult* weak = nearestHit(hits, c);
+	expect(weak && weak->Score >= 0.5, "pattern weak-third reported score passes the threshold");
+}
+
+// 缺一口的圆环全局分可以到 0.85 以上，但最差象限明显低于其余象限。只留整圈。
+void testPatternAlmostRingRejected()
+{
+	using namespace template_matching;
+	cv::Mat templ = ringPatch(96, 5, 40, 210);
+	cv::Mat canvas(360, 640, CV_8U, cv::Scalar(40));
+	const int x0 = 40, y0 = 40;
+	paste(canvas, templ, x0, y0);
+	cv::ellipse(canvas, cv::Point(260, 90), cv::Size(36, 36), 0, 15, 270, cv::Scalar(210), 5, cv::LINE_8);
+	cv::ellipse(canvas, cv::Point(480, 90), cv::Size(36, 36), 0, 0, 300, cv::Scalar(210), 5, cv::LINE_8);
+	const cv::Point2d truth(x0 + templ.cols / 2.0, y0 + templ.rows / 2.0);
+
+	MatcherParam param;
+	param.matcherType = MatcherType::PATTERN;
+	param.angle = 20;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 10;
+	param.iouThreshold = 0.5;
+	param.minArea = 256;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(templ) == 0, "pattern almost-ring setTemplate");
+	std::vector<MatchResult> hits;
+	matcher->match(canvas, hits);
+	std::cout << "    pattern almost-ring n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " c=(" << h.Center.x << "," << h.Center.y << ")" << std::endl;
+	expect((int)hits.size() == 1, "pattern almost-ring drops the open arcs");
+	expect(countNear(hits, truth, 8.0) == 1, "pattern almost-ring keeps the full ring");
+}
+
+// 圆点旁边的低分错位锁。真目标分很高，旁瓣大约 0.65，中心距超过 0.4 倍边长，以前会留下。
+void testShapeDotSidelobeDropped()
+{
+	using namespace template_matching;
+	const int box = 140;
+	const int rad = 46;
+	cv::Mat templ(box, box, CV_8U, cv::Scalar(190));
+	cv::Point c(box / 2, box / 2);
+	for (int y = 0; y < box; ++y)
+	{
+		for (int x = 0; x < box; ++x)
+		{
+			const double d = std::hypot(x - c.x, y - c.y);
+			if (d <= rad)
+				templ.at<uchar>(y, x) = (uchar)std::lround(25 + 55 * d / rad);
+		}
+	}
+	cv::circle(templ, c + cv::Point(-rad / 5, -rad / 5), std::max(2, rad / 8), cv::Scalar(210), cv::FILLED, cv::LINE_8);
+	cv::Mat canvas(640, 780, CV_8U, cv::Scalar(190));
+	const cv::Point2d truth[] = {{200, 180}, {460, 200}, {250, 460}};
+	const double scales[] = {1.0, 0.90, 0.80};
+	for (int i = 0; i < 3; ++i)
+	{
+		cv::Mat scaled;
+		cv::resize(templ, scaled, cv::Size(), scales[i], scales[i], cv::INTER_AREA);
+		const int x = (int)truth[i].x - scaled.cols / 2;
+		const int y = (int)truth[i].y - scaled.rows / 2;
+		for (int r = 0; r < scaled.rows; ++r)
+			for (int c = 0; c < scaled.cols; ++c)
+				if (scaled.at<uchar>(r, c) < 170)
+					canvas.at<uchar>(y + r, x + c) = scaled.at<uchar>(r, c);
+	}
+	MatcherParam param;
+	param.matcherType = MatcherType::SHAPE;
+	param.angle = 20;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 8;
+	param.iouThreshold = 0.5;
+	param.minArea = 256;
+	param.edgeMinMag = 12;
+	param.maxEdgePoints = 400;
+	param.usePolarity = false;
+	param.greediness = 0.8;
+	param.minScale = 0.8;
+	param.maxScale = 1.0;
+	param.scaleStep = 0.05;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(templ) == 0, "shape sidelobe setTemplate");
+	std::vector<MatchResult> hits;
+	matcher->match(canvas, hits);
+	std::cout << "    shape sidelobe n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " scale=" << h.Scale << " c=(" << h.Center.x << "," << h.Center.y << ")" << std::endl;
+	expect((int)hits.size() == 3, "shape sidelobe drops the extra lock");
+	for (const auto& p : truth)
+		expect(countNear(hits, p, 14.0) == 1, "shape sidelobe one hit per dot");
+}
+
 void testPatternOneQuadrantOcclusion()
 {
 	using namespace template_matching;
@@ -799,6 +959,9 @@ int main()
 	testPatternRingArcRejected();
 	testPatternKeepsNeighborInMargin();
 	testOverlapKeepsDifferentSizeNeighbor();
+	testPatternWeakThirdOnNoise();
+	testPatternAlmostRingRejected();
+	testShapeDotSidelobeDropped();
 	testPatternOneQuadrantOcclusion();
 	testBoardPoseUnchanged();
 	testRotatedAsymmetric();
