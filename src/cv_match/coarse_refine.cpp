@@ -48,7 +48,9 @@ MatcherParam toMatcherParam(const CoarseRefineParam& param)
 	out.meanBorder = param.meanBorder;
 	out.stopLayer = param.stopLayer;
 	out.edgeMinMag = param.edgeMinMag;
+	out.edgeContrast = param.edgeContrast;
 	out.maxEdgePoints = param.maxEdgePoints;
+	out.oriBins = param.oriBins;
 	out.usePolarity = param.usePolarity;
 	out.greediness = param.greediness;
 	out.minScale = param.minScale;

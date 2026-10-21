@@ -1061,6 +1061,197 @@ void testShapeMottleLockDropped()
 		expect(countNear(hits, p, 16.0) == 1, "shape mottle one hit per dot");
 }
 
+// 欠曝把右半边压平。两块象限几乎没对比，但左半边仍然对齐，整颗瓶盖要留下。
+void testPatternCrushedHalfCapKept()
+{
+	using namespace template_matching;
+	cv::Mat cap(160, 160, CV_8U, cv::Scalar(70));
+	cv::circle(cap, {80, 80}, 58, cv::Scalar(160), cv::FILLED);
+	cv::circle(cap, {58, 60}, 14, cv::Scalar(230), cv::FILLED);
+	cv::rectangle(cap, {36, 98}, {124, 120}, cv::Scalar(25), cv::FILLED);
+	cv::putText(cap, "C", {68, 92}, cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(40), 2);
+	cv::Mat dark(cap.size(), CV_8U);
+	for (int y = 0; y < cap.rows; ++y)
+	{
+		for (int x = 0; x < cap.cols; ++x)
+		{
+			int v = (int)std::lround(cap.at<uchar>(y, x) * 0.45 + 6);
+			if (x >= 80)
+				v = 8 + (cap.at<uchar>(y, x) & 3);
+			dark.at<uchar>(y, x) = (uchar)std::min(255, std::max(0, v));
+		}
+	}
+	cv::Mat scene(360, 420, CV_8U, cv::Scalar(10));
+	dark.copyTo(scene(cv::Rect(70, 60, 160, 160)));
+	MatcherParam param;
+	param.matcherType = MatcherType::PATTERN;
+	param.angle = 0;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 2;
+	param.iouThreshold = 0.5;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(cap) == 0, "pattern crushed-cap setTemplate");
+	std::vector<MatchResult> hits;
+	matcher->match(scene, hits);
+	std::cout << "    pattern crushed-cap n=" << hits.size();
+	if (!hits.empty())
+		std::cout << " sc=" << hits[0].Score << " c=(" << hits[0].Center.x << "," << hits[0].Center.y << ")";
+	std::cout << std::endl;
+	expect((int)hits.size() == 1, "pattern crushed-cap keeps the cap");
+	const MatchResult* r = best(hits);
+	expect(r && r->Score >= 0.5, "pattern crushed-cap score");
+	// 右半被压平后峰会往还剩结构的一侧偏，大约二三十像素，仍在瓶盖圆里。
+	expect(r && std::hypot(r->Center.x - 150.0, r->Center.y - 140.0) < 32.0, "pattern crushed-cap center");
+}
+
+// 刚过 0.5 的残弧不要留。整圈和高光整圈还在。
+void testPatternFaintRingArcDropped()
+{
+	using namespace template_matching;
+	const int d = 110;
+	cv::Mat ring(d, d, CV_8U, cv::Scalar(50));
+	cv::circle(ring, {d / 2, d / 2}, 40, cv::Scalar(200), 7);
+	cv::Mat scene(260, 520, CV_8U, cv::Scalar(50));
+	const cv::Point2d fullC(30 + d / 2.0, 40 + d / 2.0);
+	ring.copyTo(scene(cv::Rect(30, 40, d, d)));
+	cv::ellipse(scene, {340, 95}, {40, 40}, 0, 30, 190, cv::Scalar(120), 7);
+	MatcherParam param;
+	param.matcherType = MatcherType::PATTERN;
+	param.angle = 10;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 6;
+	param.iouThreshold = 0.5;
+	param.minArea = 256;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(ring) == 0, "pattern faint-arc setTemplate");
+	std::vector<MatchResult> hits;
+	matcher->match(scene, hits);
+	std::cout << "    pattern faint-arc n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " c=(" << h.Center.x << "," << h.Center.y << ")" << std::endl;
+	expect(countNear(hits, fullC, 10.0) == 1, "pattern faint-arc keeps the full ring");
+	expect((int)hits.size() == 1, "pattern faint-arc drops the weak open arc");
+}
+
+// 托盘：边缘 mask、内部孔、一颗缺左边。定尺度下完整件高分，残缺件过 0.5，框落在零件上而不是孔上。
+void testShapeTrayMaskAndChip()
+{
+	using namespace template_matching;
+	const int box = 104;
+	cv::Point tc(48, 52);
+	cv::Mat templ(box, box, CV_8U, cv::Scalar(32));
+	cv::circle(templ, tc, 34, cv::Scalar(210), cv::FILLED);
+	cv::rectangle(templ, {tc.x + 20, tc.y - 6}, {tc.x + 38, tc.y + 6}, cv::Scalar(210), cv::FILLED);
+	cv::circle(templ, tc, 11, cv::Scalar(32), cv::FILLED);
+	cv::Mat mask = cv::Mat::zeros(templ.size(), CV_8U);
+	cv::circle(mask, tc, 38, cv::Scalar(255), cv::FILLED);
+	cv::rectangle(mask, {tc.x + 16, tc.y - 10}, {tc.x + 44, tc.y + 10}, cv::Scalar(255), cv::FILLED);
+
+	auto stamp = [&](cv::Mat& dst, cv::Point c, bool chip) {
+		cv::Mat tile = cv::Mat(dst, cv::Rect(c.x - tc.x, c.y - tc.y, box, box));
+		templ.copyTo(tile);
+		if (!chip)
+			return;
+		// 只咬掉左侧大约 70° 的外圈，孔和凸耳还在。缺一段应仍高于 0.5，并低于完整件。
+		constexpr double kPi = 3.14159265358979323846;
+		for (int y = 0; y < tile.rows; ++y)
+		{
+			for (int x = 0; x < tile.cols; ++x)
+			{
+				const float dx = (float)x - tc.x;
+				const float dy = (float)y - tc.y;
+				const float r = std::hypot(dx, dy);
+				if (r < 16.f || r > 40.f)
+					continue;
+				const double ang = std::atan2((double)dy, (double)dx);
+				const double d = std::fabs(std::atan2(std::sin(ang - kPi), std::cos(ang - kPi)));
+				if (d < 35.0 * kPi / 180.0)
+					tile.at<uchar>(y, x) = 32;
+			}
+		}
+	};
+
+	cv::Mat scene(520, 640, CV_8U, cv::Scalar(32));
+	const cv::Point places[] = {{90, 90}, {250, 100}, {410, 90}, {100, 280}, {270, 290}, {430, 270}};
+	const int chipIdx = 4;
+	std::vector<cv::Point2d> truth;
+	for (int i = 0; i < 6; ++i)
+	{
+		stamp(scene, places[i], i == chipIdx);
+		truth.emplace_back(places[i].x, places[i].y);
+	}
+	const cv::Point stray(560, 420);
+	cv::circle(scene, stray, 18, cv::Scalar(210), 4);
+	cv::circle(scene, stray, 11, cv::Scalar(32), cv::FILLED);
+
+	MatcherParam param;
+	param.matcherType = MatcherType::SHAPE;
+	param.angle = 12;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 10;
+	param.iouThreshold = 0.1;
+	param.minArea = 256;
+	param.edgeMinMag = 22;
+	param.edgeContrast = 80;
+	param.maxEdgePoints = 220;
+	param.usePolarity = true;
+	param.greediness = 0.9;
+	param.oriBins = 16;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(templ, mask) == 0, "shape tray setTemplate");
+	std::vector<MatchResult> hits;
+	matcher->match(scene, hits);
+	std::cout << "    shape tray n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " c=(" << h.Center.x << "," << h.Center.y << ")" << std::endl;
+	expect((int)hits.size() == 6, "shape tray finds every part and not the stray hole");
+	for (int i = 0; i < 6; ++i)
+		expect(countNear(hits, truth[i], 10.0) == 1, "shape tray one hit per part");
+	const MatchResult* chip = nearestHit(hits, truth[chipIdx]);
+	const MatchResult* full = nearestHit(hits, truth[0]);
+	expect(chip && chip->Score >= 0.5, "shape tray chipped part passes 0.5");
+	expect(full && full->Score >= 0.9, "shape tray complete part stays high");
+	expect(chip && full && chip->Score < full->Score - 0.05, "shape tray chip scores below a complete part");
+	expect(countNear(hits, cv::Point2d(stray.x, stray.y), 18.0) == 0, "shape tray does not lock the stray hole");
+}
+
+// 对比度设得很高时，分数不能再按 2.5 倍门槛把正常边缘乘掉。
+void testShapeHighContrastStillFinds()
+{
+	using namespace template_matching;
+	cv::Mat templ(88, 88, CV_8U, cv::Scalar(40));
+	cv::rectangle(templ, {16, 18}, {70, 68}, cv::Scalar(220), cv::FILLED);
+	cv::rectangle(templ, {28, 30}, {46, 48}, cv::Scalar(40), cv::FILLED);
+	cv::Mat scene(240, 280, CV_8U, cv::Scalar(40));
+	const int x0 = 80, y0 = 70;
+	paste(scene, templ, x0, y0);
+	MatcherParam param;
+	param.matcherType = MatcherType::SHAPE;
+	param.angle = 8;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 3;
+	param.iouThreshold = 0.1;
+	param.minArea = 256;
+	param.edgeMinMag = 100;
+	param.edgeContrast = 0;
+	param.maxEdgePoints = 200;
+	param.greediness = 0.9;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(templ) == 0, "shape high-contrast setTemplate");
+	std::vector<MatchResult> hits;
+	matcher->match(scene, hits);
+	std::cout << "    shape high-contrast n=" << hits.size();
+	if (!hits.empty())
+		std::cout << " sc=" << hits[0].Score;
+	std::cout << std::endl;
+	expect((int)hits.size() == 1, "shape high-contrast still one hit");
+	const MatchResult* r = best(hits);
+	expect(r && r->Score >= 0.75, "shape high-contrast score stays high");
+	const double cx = x0 + templ.cols / 2.0;
+	const double cy = y0 + templ.rows / 2.0;
+	expect(r && std::hypot(r->Center.x - cx, r->Center.y - cy) < 6.0, "shape high-contrast center");
+}
+
 void testPatternBrightnessLikeExposure()
 {
 	using namespace template_matching;
@@ -1107,8 +1298,12 @@ int main()
 	testPatternAlmostRingRejected();
 	testShapeDotSidelobeDropped();
 	testPatternExposureQuadrantKept();
+	testPatternCrushedHalfCapKept();
+	testPatternFaintRingArcDropped();
 	testPatternSpecularRingDropsOpenArc();
 	testShapeMottleLockDropped();
+	testShapeTrayMaskAndChip();
+	testShapeHighContrastStillFinds();
 	testPatternOneQuadrantOcclusion();
 	testBoardPoseUnchanged();
 	testRotatedAsymmetric();

@@ -64,8 +64,12 @@ namespace template_matching
 		// 精搜停止层：0=原图，1=金字塔第 1 层（更快）
 		int stopLayer = 0;
 
-		// 形状匹配：边缘最小梯度（8bit 图大约等于灰度落差）
+		// 形状匹配：最小对比度。低于这个梯度的点不进模型（对应 MinContrast）。
 		double edgeMinMag = 18.0;
+
+		// 形状匹配：对比度。高于这个梯度的点是种子；介于它和 edgeMinMag 之间的点，
+		// 只有连到种子上才保留（对应 Contrast）。<= edgeMinMag 时退回单阈值，与旧行为一致。
+		double edgeContrast = 0.0;
 
 		// 形状匹配：每层最多保留的边缘点数
 		int maxEdgePoints = 320;
@@ -75,6 +79,10 @@ namespace template_matching
 
 		// 形状匹配：0~1，越大越早放弃不可能达到阈值的位置
 		double greediness = 0.9;
+
+		// 形状匹配：0=全程浮点余弦（默认，与旧行为一致）。
+		// 16=顶层把方向量化成 16 档，用余弦表在邻域里取最大相似度做粗搜；末层仍用浮点余弦。
+		int oriBins = 0;
 
 		// 尺度搜索（相对模板）。minScale=maxScale=1 时只搜原尺度，与旧行为一致。
 		double minScale = 1.0;
