@@ -256,14 +256,15 @@ void buildOri16(const cv::Mat& nx, const cv::Mat& ny, const cv::Mat& mag, float 
 constexpr int kMapSpread = 3;
 constexpr int kMapStride = 4;
 
-// 末层和 oriBins=0 粗搜的名额。不能比步长加倍之前更紧：maxCount=200 时旧名额是 800。
-// oriBins=16 的粗搜改走 plateauKeepCount；这里的下限用在精修之后的末层去重。
+// 粗搜进精修的名额。不能比步长加倍之前更紧：maxCount=200 时旧名额是 800，
+// 收到 400 会在纹理图上把贴边弱分挤掉。oriBins=16 再垫一个下限。
+// 贴边名单用这个数。内部平台去重可以再宽一档，但不能再把贴边收进 8px。
 int coarseKeepCount(int maxCount, bool quant)
 {
 	const int loose = std::max(maxCount * 4, maxCount + 8);
 	if (!quant)
 		return loose;
-	return std::max(loose, 1024);
+	return std::max(loose, 128);
 }
 
 int refineKeepCount(int maxCount, bool quant)
@@ -271,19 +272,12 @@ int refineKeepCount(int maxCount, bool quant)
 	const int loose = std::max(maxCount * 3, maxCount + 6);
 	if (!quant)
 		return loose;
-	// 第一层精修之后假峰还没全部掉下去。名额太紧会把刚找回角度的弱真峰截掉。
-	return std::max(loose, 1536);
+	return std::max(loose, 96);
 }
 
-// 先只把同一片平台收成一个种子。半径小于整幅去重（大约 16px），
-// 8～16px 外的另一个峰先留着，等浮点分出来再决定留谁。
+// 只用于内部响应图。贴边浮点分仍用整幅去重半径（大约 16px）。
+// 8b3bbe7 把 8px 用到贴边名单上之后，233 的 T11 从 (25,159)@0.532 消失，最近命中大约 293px。
 constexpr double kPlateauDist = 8.0;
-constexpr int kSnapRadius = 2;
-
-int plateauKeepCount(int maxCount)
-{
-	return std::max(coarseKeepCount(maxCount, true) * 4, 4096);
-}
 struct OriResponse16
 {
 	int width = 0;
@@ -879,51 +873,23 @@ void nmsKeepOrigins(std::vector<ShapeCandidate>& cands, double minDist, int maxC
 	cands.insert(cands.end(), border.begin(), border.end());
 }
 
-// 响应图平台的最高格点经常在边上。精修位置窗口已经收回 ±4，这里用浮点分在顶层
-// ±kSnapRadius 里把内部种子挪到真峰上。不改分数：有些真峰要等第一层把角度找回来，
-// 现在改成浮点分会把它们排到纹理假峰后面。贴边种子本来就对准了，不再挪。
-void snapInteriorFloat(std::vector<ShapeCandidate>& cands, const std::vector<ShapeEdgePt>& edges, const cv::Mat& nx,
-					   const cv::Mat& ny, const cv::Mat& mag, float minMag, bool polarity, double greed,
-					   double minScore, bool scaleSearch)
+double boxMinSide(const MatchResult& r)
 {
-	const int n = (int)cands.size();
-	const int cols = nx.cols;
-	const int rows = nx.rows;
-#pragma omp parallel for schedule(static)
-	for (int i = 0; i < n; ++i)
-	{
-		if (cands[i].fromBorder)
-			continue;
-		const std::vector<ShapeEdgePt> model =
-			scaleSearch ? scaleEdges(rotateModel(edges, cands[i].angle), cands[i].scale)
-						: rotateModel(edges, cands[i].angle);
-		double bestS = -1.0;
-		double bx = cands[i].cx;
-		double by = cands[i].cy;
-		for (int dy = -kSnapRadius; dy <= kSnapRadius; ++dy)
-		{
-			for (int dx = -kSnapRadius; dx <= kSnapRadius; ++dx)
-			{
-				const double cx = cands[i].cx + dx;
-				const double cy = cands[i].cy + dy;
-				if (cx < 0.0 || cy < 0.0 || cx > cols - 1 || cy > rows - 1)
-					continue;
-				// 早停返回的是没算完的平均，只可能更低，不会盖过算完的真峰。
-				const double sc = scorePose(model, nx, ny, mag, minMag, cx, cy, polarity, greed, minScore, false);
-				if (sc > bestS)
-				{
-					bestS = sc;
-					bx = cx;
-					by = cy;
-				}
-			}
-		}
-		if (bestS >= 0.0)
-		{
-			cands[i].cx = bx;
-			cands[i].cy = by;
-		}
-	}
+	const double w = std::hypot(r.RightTop.x - r.LeftTop.x, r.RightTop.y - r.LeftTop.y);
+	const double h = std::hypot(r.LeftBottom.x - r.LeftTop.x, r.LeftBottom.y - r.LeftTop.y);
+	return std::max(1.0, std::min(w, h));
+}
+
+// 内部峰和贴边峰重叠时留下贴边。dropWeakNearby 会把 0.53 的 T11 让给旁边更高的内部假峰。
+bool interiorConflictsBorder(const MatchResult& interior, const MatchResult& border)
+{
+	const double minSide = std::min(boxMinSide(interior), boxMinSide(border));
+	const double dist = std::hypot(interior.Center.x - border.Center.x, interior.Center.y - border.Center.y);
+	if (dist < 0.40 * minSide)
+		return true;
+	if (dist < 0.65 * minSide && border.Score < 0.78 && border.Score < interior.Score * 0.74)
+		return true;
+	return false;
 }
 
 }  // namespace
@@ -1175,13 +1141,26 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	const double minDistTop = 0.45 * std::max(4.0, topSpan);
 	if (quantCoarse)
 	{
-		// 全半径大约 16px。响应图假峰在这个距离里会把弱真峰吃掉，自己再到末层掉到阈值下。
-		// 粗搜只在大约 8px 里收平台；更远的峰都进精修，等浮点分出来再按全半径去重。
-		// 贴边仍分开，不收质心，也不做 ±2 px 挪点。
+		// 贴边用整幅半径，和 8e6638d 一样：不收质心，名额是 coarseKeepCount。
+		// 内部响应图才缩到大约 8px，让 8～16px 外的弱真峰不要被 1 分假峰提前删掉。
+		std::vector<ShapeCandidate> border;
+		std::vector<ShapeCandidate> interior;
+		border.reserve(coarse.size() / 8 + 1);
+		interior.reserve(coarse.size());
+		for (const auto& c : coarse)
+		{
+			if (c.fromBorder)
+				border.push_back(c);
+			else
+				interior.push_back(c);
+		}
 		const double plateau = std::min(minDistTop, kPlateauDist);
-		nmsKeepOrigins(coarse, plateau, plateauKeepCount(matchParam_.maxCount), true, plateau);
-		snapInteriorFloat(coarse, topModel.edges, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag, polarity,
-						  greed, coarseTh, scaleSearch_);
+		const int borderKeep = coarseKeepCount(matchParam_.maxCount, true);
+		nmsCandidates(interior, plateau, borderKeep, true, plateau);
+		nmsCandidates(border, minDistTop, borderKeep, false);
+		coarse.clear();
+		coarse.insert(coarse.end(), interior.begin(), interior.end());
+		coarse.insert(coarse.end(), border.begin(), border.end());
 	}
 	else
 		nmsCandidates(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, false), false);
@@ -1192,9 +1171,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		std::vector<ShapeCandidate> next;
 		const auto& mdl = layers_[layer];
 		double step = angleStepDeg(mdl.edges);
-		// 位置窗口一律 ±4 px。内部种子已经在顶层用浮点分对齐过 ±2 px；
-		// 第一层再开 ±10 px 会把弱真峰拖到旁边纹理上，233 上就会少 1～2 个。
-		// 贴边同样是 ±4。角度仍大约 ±12°，只给内部响应图种子的第一层：粗分角度可以偏约 10°。
+		// 贴边第一层必须是 ±4 px、±3 步。233 上 ±10 px 会把 T11 拖离 (25, 159)。
+		// 内部响应图种子第一层仍是 ±10 px、大约 ±12°，和 8e6638d 一样。
 		std::vector<ShapeCandidate> slots(refined.size());
 		std::vector<char> slotOk(refined.size(), 0);
 #pragma omp parallel for schedule(static)
@@ -1207,7 +1185,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			ShapeCandidate best = c0;
 			best.cx = cx0;
 			best.cy = cy0;
-			const int rad = 4;
+			const int rad = (quantCoarse && layer == top - 1 && !c0.fromBorder) ? 10 : 4;
 			std::vector<double> angs;
 			if (matchParam_.angle < 1e-6)
 				angs.push_back(0.0);
@@ -1344,16 +1322,73 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	else
 		nmsCandidates(refined, fullDist, coarseKeepCount(matchParam_.maxCount, false));
 	const int pyrScale = 1 << stopLayer;
-	std::vector<MatchResult> packed;
-	packed.reserve(refined.size());
+	if (!quantCoarse)
+	{
+		std::vector<MatchResult> packed;
+		packed.reserve(refined.size());
+		for (const auto& c : refined)
+		{
+			if (c.score < matchParam_.scoreThreshold)
+				continue;
+			packed.push_back(packResult(c.cx * pyrScale, c.cy * pyrScale, c.angle, c.score, templW_, templH_, c.scale));
+		}
+		BaseMatcher::suppressMatchOverlap(packed, matchParam_.iouThreshold, matchParam_.maxCount, true);
+		matchResults.swap(packed);
+		return (int)matchResults.size();
+	}
+
+	// 贴边和内部分开做最后的重叠抑制。内部假峰分数更高时，联合名单会把 0.53 的贴边残件删掉。
+	std::vector<MatchResult> borderHits;
+	std::vector<MatchResult> interiorHits;
 	for (const auto& c : refined)
 	{
 		if (c.score < matchParam_.scoreThreshold)
 			continue;
-		packed.push_back(packResult(c.cx * pyrScale, c.cy * pyrScale, c.angle, c.score, templW_, templH_, c.scale));
+		MatchResult r = packResult(c.cx * pyrScale, c.cy * pyrScale, c.angle, c.score, templW_, templH_, c.scale);
+		if (c.fromBorder)
+			borderHits.push_back(r);
+		else
+			interiorHits.push_back(r);
 	}
-	BaseMatcher::suppressMatchOverlap(packed, matchParam_.iouThreshold, matchParam_.maxCount, true);
-	matchResults.swap(packed);
+	const int cap = std::max(matchParam_.maxCount, 1);
+	BaseMatcher::suppressMatchOverlap(borderHits, matchParam_.iouThreshold, cap, true);
+	BaseMatcher::suppressMatchOverlap(interiorHits, matchParam_.iouThreshold, cap, true);
+	std::vector<MatchResult> keptInterior;
+	keptInterior.reserve(interiorHits.size());
+	for (const auto& in : interiorHits)
+	{
+		bool drop = false;
+		for (const auto& b : borderHits)
+		{
+			if (interiorConflictsBorder(in, b))
+			{
+				drop = true;
+				break;
+			}
+		}
+		if (!drop)
+			keptInterior.push_back(in);
+	}
+	const int room = std::max(0, cap - (int)borderHits.size());
+	if ((int)keptInterior.size() > room)
+	{
+		std::sort(keptInterior.begin(), keptInterior.end(), [](const MatchResult& a, const MatchResult& b) {
+			if (a.Score != b.Score)
+				return a.Score > b.Score;
+			if (a.Center.y != b.Center.y)
+				return a.Center.y < b.Center.y;
+			if (a.Center.x != b.Center.x)
+				return a.Center.x < b.Center.x;
+			if (a.Angle != b.Angle)
+				return a.Angle < b.Angle;
+			return a.Scale < b.Scale;
+		});
+		keptInterior.resize((size_t)room);
+	}
+	matchResults.clear();
+	matchResults.reserve(borderHits.size() + keptInterior.size());
+	matchResults.insert(matchResults.end(), borderHits.begin(), borderHits.end());
+	matchResults.insert(matchResults.end(), keptInterior.begin(), keptInterior.end());
 	return (int)matchResults.size();
 }
 
