@@ -1,5 +1,6 @@
 // 尺度搜索：不依赖 TensorRT。编译见 Makefile 的 test-scale。
 #include "cv_match/matcher.h"
+#include "cv_match/base_matcher.h"
 
 #include <cmath>
 #include <iostream>
@@ -444,6 +445,202 @@ void testRingsNoAngleDuplicates()
 	expect((int)hits.size() == 4, "pattern rings unchanged at 4");
 	for (const auto& c : truth)
 		expect(countNear(hits, c, 6.0) == 1, "pattern rings one hit per ring");
+
+	// 整圈在角度搜索下四个象限都对齐，不能被局部弧的过滤删掉。
+	param.angle = 20;
+	auto patternAng = GetMatcher(param);
+	expect(patternAng && patternAng->setTemplate(templ) == 0, "pattern rings angle setTemplate");
+	hits.clear();
+	patternAng->match(canvas, hits);
+	std::cout << "    pattern rings ang20 n=" << hits.size() << std::endl;
+	expect((int)hits.size() == 4, "pattern rings with angle stay at 4");
+	for (const auto& c : truth)
+		expect(countNear(hits, c, 8.0) == 1, "pattern rings angle one hit per ring");
+}
+
+// 一个整圈加远处的椭圆弧。全局 NCC 能让弧过 0.5，但象限对不齐，不应留成额外实例。
+void testPatternRingArcRejected()
+{
+	using namespace template_matching;
+	cv::Mat templ = ringPatch(72, 6, 30, 220);
+	cv::Mat canvas(360, 420, CV_8U, cv::Scalar(30));
+	const int x0 = 150, y0 = 130;
+	paste(canvas, templ, x0, y0);
+	cv::ellipse(canvas, cv::Point(70, 70), cv::Size(48, 48), 0, 10, 220, cv::Scalar(210), 6, cv::LINE_8);
+	cv::ellipse(canvas, cv::Point(330, 80), cv::Size(40, 55), 20, 0, 300, cv::Scalar(200), 5, cv::LINE_8);
+	cv::ellipse(canvas, cv::Point(80, 280), cv::Size(55, 36), -15, 30, 250, cv::Scalar(215), 6, cv::LINE_8);
+	const cv::Point2d truth(x0 + templ.cols / 2.0, y0 + templ.rows / 2.0);
+
+	MatcherParam param;
+	param.matcherType = MatcherType::PATTERN;
+	param.angle = 20;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 15;
+	param.iouThreshold = 0.5;
+	param.minArea = 256;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(templ) == 0, "pattern arc setTemplate");
+	std::vector<MatchResult> hits;
+	matcher->match(canvas, hits);
+	std::cout << "    pattern one+arcs n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " c=(" << h.Center.x << "," << h.Center.y << ")" << std::endl;
+	expect((int)hits.size() == 1, "pattern arc scene is only the full ring");
+	expect(countNear(hits, truth, 8.0) == 1, "pattern arc scene hit is on the ring");
+
+	param.matcherType = MatcherType::SHAPE;
+	param.angle = 15;
+	param.minScale = 0.85;
+	param.maxScale = 1.15;
+	param.scaleStep = 0.1;
+	param.edgeMinMag = 12;
+	param.maxEdgePoints = 320;
+	param.greediness = 0.8;
+	auto shape = GetMatcher(param);
+	expect(shape && shape->setTemplate(templ) == 0, "shape arc setTemplate");
+	hits.clear();
+	shape->match(canvas, hits);
+	std::cout << "    shape one+arcs n=" << hits.size() << std::endl;
+	expect(countNear(hits, truth, 8.0) == 1, "shape arc scene still one hit on the ring");
+	expect((int)hits.size() <= 2, "shape arc scene does not grow");
+}
+
+// 大模板只有中心一小块有对比。旁边较小的实例落在大框里，但中心是分开的，两个都要留下。
+void testPatternKeepsNeighborInMargin()
+{
+	using namespace template_matching;
+	const int box = 200;
+	const int rad = 22;
+	cv::Mat templ(box, box, CV_8U, cv::Scalar(180));
+	cv::circle(templ, cv::Point(box / 2, box / 2), rad, cv::Scalar(40), cv::FILLED, cv::LINE_8);
+	const int dist = 72;
+	const cv::Point2d a(220, 220);
+	const cv::Point2d b(220 + dist, 220);
+	const cv::Point2d c(220, 520);
+	cv::Mat canvas(700, 760, CV_8U, cv::Scalar(180));
+	cv::circle(canvas, a, rad, cv::Scalar(40), cv::FILLED, cv::LINE_8);
+	cv::circle(canvas, b, (int)std::lround(rad * 0.75), cv::Scalar(40), cv::FILLED, cv::LINE_8);
+	cv::circle(canvas, c, rad, cv::Scalar(40), cv::FILLED, cv::LINE_8);
+	const cv::Point2d truth[] = {a, b, c};
+
+	MatcherParam param;
+	param.matcherType = MatcherType::PATTERN;
+	param.angle = 0;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 8;
+	param.iouThreshold = 0.5;
+	param.minArea = 64;
+	param.minScale = 0.75;
+	param.maxScale = 1.0;
+	param.scaleStep = 0.25;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(templ) == 0, "pattern margin setTemplate");
+	std::vector<MatchResult> hits;
+	matcher->match(canvas, hits);
+	std::cout << "    pattern margin n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " scale=" << h.Scale << " c=(" << h.Center.x << "," << h.Center.y << ")" << std::endl;
+	expect((int)hits.size() == 3, "pattern margin keeps the neighbor inside the large box");
+	for (const auto& p : truth)
+		expect(countNear(hits, p, 14.0) == 1, "pattern margin one hit per dot");
+
+	param.matcherType = MatcherType::SHAPE;
+	param.edgeMinMag = 10;
+	param.maxEdgePoints = 320;
+	param.greediness = 0.8;
+	auto shape = GetMatcher(param);
+	expect(shape && shape->setTemplate(templ) == 0, "shape margin setTemplate");
+	hits.clear();
+	shape->match(canvas, hits);
+	std::cout << "    shape margin n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " scale=" << h.Scale << " c=(" << h.Center.x << "," << h.Center.y << ")" << std::endl;
+	// 这块大空白模板上，SHAPE 的边缘模型锁不住旁边那个更小的圆，本来就只有两个大圆。
+	// 这里只守住不要多出一个贴在真目标上的错尺度旁瓣，也不要把已经找到的大圆并掉。
+	expect(countNear(hits, a, 14.0) == 1, "shape margin keeps the large dot");
+	expect(countNear(hits, c, 14.0) == 1, "shape margin keeps the far dot");
+	expect((int)hits.size() <= 3, "shape margin does not add a scale sidelobe");
+}
+
+template_matching::MatchResult axisBox(double cx, double cy, double side, double score, double scale)
+{
+	template_matching::MatchResult r;
+	const double h = side * 0.5;
+	r.LeftTop = cv::Point2d(cx - h, cy - h);
+	r.RightTop = cv::Point2d(cx + h, cy - h);
+	r.RightBottom = cv::Point2d(cx + h, cy + h);
+	r.LeftBottom = cv::Point2d(cx - h, cy + h);
+	r.Center = cv::Point2d(cx, cy);
+	r.Score = score;
+	r.Scale = scale;
+	return r;
+}
+
+// 尺寸差开、中心也分开时，高分邻点要留下；贴在旁边的低分错尺度锁要去掉。同尺度、中心已经分开的不删。
+void testOverlapKeepsDifferentSizeNeighbor()
+{
+	using namespace template_matching;
+	{
+		std::vector<MatchResult> hits = {
+			axisBox(0, 0, 100, 0.90, 1.0),
+			axisBox(33, 0, 70, 0.85, 0.70),
+		};
+		BaseMatcher::suppressMatchOverlap(hits, 0.5, 8, true);
+		expect((int)hits.size() == 2, "different-size high scores both stay");
+	}
+	{
+		std::vector<MatchResult> hits = {
+			axisBox(0, 0, 100, 0.90, 1.0),
+			axisBox(33, 0, 70, 0.40, 0.70),
+		};
+		BaseMatcher::suppressMatchOverlap(hits, 0.5, 8, true);
+		expect((int)hits.size() == 1, "weak different-scale sidelobe is dropped");
+		expect(hits.size() == 1 && hits[0].Score > 0.8, "the stronger hit remains");
+	}
+	{
+		std::vector<MatchResult> hits = {
+			axisBox(0, 0, 80, 0.90, 1.0),
+			axisBox(50, 0, 80, 0.55, 1.0),
+		};
+		BaseMatcher::suppressMatchOverlap(hits, 0.5, 8, true);
+		expect((int)hits.size() == 2, "same-scale separated hits both stay");
+	}
+	{
+		std::vector<MatchResult> hits = {
+			axisBox(0, 0, 80, 0.90, 1.0),
+			axisBox(10, 0, 80, 0.80, 1.0),
+		};
+		BaseMatcher::suppressMatchOverlap(hits, 0.5, 8, true);
+		expect((int)hits.size() == 1, "same center still collapses to one");
+	}
+}
+
+// 只挡掉一个象限时，其余象限仍对齐，不能当成半圈弧删掉。
+void testPatternOneQuadrantOcclusion()
+{
+	using namespace template_matching;
+	cv::Mat patch = asymmetricPatch();
+	cv::Mat canvas(240, 320, CV_8U, cv::Scalar(40));
+	const int x0 = 80, y0 = 70;
+	paste(canvas, patch, x0, y0);
+	canvas(cv::Rect(x0 + patch.cols / 2, y0 + patch.rows / 2, patch.cols - patch.cols / 2, patch.rows - patch.rows / 2)).setTo(15);
+	MatcherParam param;
+	param.matcherType = MatcherType::PATTERN;
+	param.angle = 0;
+	param.scoreThreshold = 0.45;
+	param.maxCount = 3;
+	param.iouThreshold = 0.3;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(patch) == 0, "pattern occlusion setTemplate");
+	std::vector<MatchResult> hits;
+	matcher->match(canvas, hits);
+	std::cout << "    pattern one-quadrant n=" << hits.size();
+	if (!hits.empty())
+		std::cout << " sc=" << best(hits)->Score;
+	std::cout << std::endl;
+	expect((int)hits.size() == 1, "pattern one-quadrant occlusion stays one hit");
+	const MatchResult* r = best(hits);
+	expect(r && std::fabs(r->LeftTop.x - x0) < 3.0 && std::fabs(r->LeftTop.y - y0) < 3.0, "pattern one-quadrant origin");
 }
 
 void testRingClutterNotDuplicated()
@@ -599,6 +796,10 @@ int main()
 	testGreenDotsMultiScale();
 	testRingsNoAngleDuplicates();
 	testRingClutterNotDuplicated();
+	testPatternRingArcRejected();
+	testPatternKeepsNeighborInMargin();
+	testOverlapKeepsDifferentSizeNeighbor();
+	testPatternOneQuadrantOcclusion();
 	testBoardPoseUnchanged();
 	testRotatedAsymmetric();
 	testPatternBrightnessLikeExposure();

@@ -16,6 +16,113 @@ namespace template_matching {
 		{
 			return std::isfinite(pt.x) && std::isfinite(pt.y);
 		}
+
+		Mat asGray(const Mat& src)
+		{
+			if (src.empty() || src.channels() == 1)
+				return src;
+			Mat gray;
+			if (src.channels() == 3)
+				cvtColor(src, gray, COLOR_BGR2GRAY);
+			else if (src.channels() == 4)
+				cvtColor(src, gray, COLOR_BGRA2GRAY);
+			else
+				extractChannel(src, gray, 0);
+			return gray;
+		}
+
+		double nccOf(const Mat& a, const Mat& b)
+		{
+			if (a.empty() || b.empty() || a.size() != b.size())
+				return 0.0;
+			Scalar ma, sa, mb, sb;
+			meanStdDev(a, ma, sa);
+			meanStdDev(b, mb, sb);
+			if (sa[0] < 1e-6 || sb[0] < 1e-6)
+				return 0.0;
+			Mat af, bf;
+			a.convertTo(af, CV_32F);
+			b.convertTo(bf, CV_32F);
+			const double num = sum((af - (float)ma[0]).mul(bf - (float)mb[0]))[0];
+			return num / (sa[0] * sb[0] * (double)a.total());
+		}
+
+		// 半圈弧能在全局 NCC 上过 0.5，但有一半象限和模板对不上。整圈、加亮、只挡一个象限的不删。
+		bool partialPatternHit(const Mat& sceneIn, const Mat& templIn, const Mat& maskIn, const MatchResult& hit)
+		{
+			if (!(hit.Score < 0.85))
+				return false;
+			const double w = std::hypot(hit.RightTop.x - hit.LeftTop.x, hit.RightTop.y - hit.LeftTop.y);
+			const double h = std::hypot(hit.LeftBottom.x - hit.LeftTop.x, hit.LeftBottom.y - hit.LeftTop.y);
+			if (w < 12.0 || h < 12.0)
+				return false;
+			int W = std::max(12, std::min(180, (int)std::lround(w)));
+			int H = std::max(12, std::min(180, (int)std::lround(h)));
+			Point2f src[3] = {
+				Point2f((float)hit.LeftTop.x, (float)hit.LeftTop.y),
+				Point2f((float)hit.RightTop.x, (float)hit.RightTop.y),
+				Point2f((float)hit.LeftBottom.x, (float)hit.LeftBottom.y)};
+			Point2f dst[3] = {{0.f, 0.f}, {(float)(W - 1), 0.f}, {0.f, (float)(H - 1)}};
+			Mat affine = getAffineTransform(src, dst);
+			if (affine.empty())
+				return false;
+			Mat scene = asGray(sceneIn);
+			Mat templ = asGray(templIn);
+			if (scene.empty() || templ.empty())
+				return false;
+			Mat aligned;
+			warpAffine(scene, aligned, affine, Size(W, H), INTER_LINEAR, BORDER_REPLICATE);
+			Mat resizedTempl;
+			const int interp = (W * (double)H < templ.cols * (double)templ.rows) ? INTER_AREA : INTER_LINEAR;
+			resize(templ, resizedTempl, Size(W, H), 0, 0, interp);
+			Mat mask;
+			if (!maskIn.empty())
+			{
+				Mat maskGray = maskIn.channels() == 1 ? maskIn : asGray(maskIn);
+				resize(maskGray, mask, Size(W, H), 0, 0, INTER_NEAREST);
+			}
+			int present = 0;
+			int bad = 0;
+			for (int qy = 0; qy < 2; ++qy)
+			{
+				for (int qx = 0; qx < 2; ++qx)
+				{
+					const int x0 = qx * W / 2;
+					const int y0 = qy * H / 2;
+					const int x1 = (qx + 1) * W / 2;
+					const int y1 = (qy + 1) * H / 2;
+					if (x1 <= x0 || y1 <= y0)
+						continue;
+					Rect roi(x0, y0, x1 - x0, y1 - y0);
+					if (!mask.empty() && mean(mask(roi))[0] < 80.0)
+						continue;
+					Scalar ignored, templStd, sceneStd;
+					meanStdDev(resizedTempl(roi), ignored, templStd);
+					if (templStd[0] < 5.0)
+						continue;
+					meanStdDev(aligned(roi), ignored, sceneStd);
+					++present;
+					// 0.35：整圈的弱象限仍高于此（合成图上大约 0.40），半圈弧的错位象限低于此。
+					if (sceneStd[0] < 3.0 || nccOf(resizedTempl(roi), aligned(roi)) < 0.35)
+						++bad;
+				}
+			}
+			return present >= 3 && bad * 2 >= present;
+		}
+
+		void dropPartialPatternHits(vector<MatchResult>& hits, const Mat& scene, const Mat& templ, const Mat& mask)
+		{
+			if (hits.empty() || scene.empty() || templ.empty())
+				return;
+			vector<MatchResult> kept;
+			kept.reserve(hits.size());
+			for (const MatchResult& hit : hits)
+			{
+				if (!partialPatternHit(scene, templ, mask, hit))
+					kept.push_back(hit);
+			}
+			hits.swap(kept);
+		}
 	}
 
 	int GetTopLayer(Mat* matTempl, int iMinDstLength)
@@ -681,6 +788,14 @@ namespace template_matching {
 					continue;
 				rect1 = vec->at(i).rectR;
 				rect2 = vec->at(j).rectR;
+				const double side1 = std::max(1.0, (double)std::min(rect1.size.width, rect1.size.height));
+				const double side2 = std::max(1.0, (double)std::min(rect2.size.width, rect2.size.height));
+				const double minSide = std::min(side1, side2);
+				const double maxSide = std::max(side1, side2);
+				const double centerDist = norm(rect1.center - rect2.center);
+				// 大模板的空白边把旁边较小的实例包进去时，两个都留。尺寸接近的重叠仍按原来的比例删。
+				if (centerDist >= 0.45 * minSide && maxSide > minSide * 1.18)
+					continue;
 				vector<Point2f> vecInterSec;
 				int iInterSecType = rotatedRectangleIntersection(rect1, rect2, vecInterSec);
 				if (iInterSecType == INTERSECT_NONE)//無交集
@@ -753,8 +868,15 @@ namespace template_matching {
 
 	void SuppressOverlap(vector<MatchResult>& results, double maxOverlap, int maxCount)
 	{
-		// 尺度之间的合并：同一中心的不同角度、错位的相邻尺度都去掉。
-		BaseMatcher::suppressMatchOverlap(results, maxOverlap, maxCount);
+		// 尺度之间的合并：同一中心的不同角度、错位的相邻尺度都去掉。尺寸差开的邻实例保留。
+		BaseMatcher::suppressMatchOverlap(results, maxOverlap, maxCount, true);
+	}
+
+	void FinishPatternHits(vector<MatchResult>& hits, const Mat& scene, const Mat& templ, const Mat& mask,
+						   double maxOverlap, int maxCount)
+	{
+		dropPartialPatternHits(hits, scene, templ, mask);
+		SuppressOverlap(hits, maxOverlap, maxCount);
 	}
 
 	int PatternMatcher::matchPrepared(const cv::Mat& image, const cv::Mat& templImage, s_TemplData& templData,
@@ -1151,12 +1273,21 @@ namespace template_matching {
 	int PatternMatcher::match(const cv::Mat& image, std::vector<MatchResult>& matchResults)
 	{
 		matchResults.clear();
+		Mat maskForQuads;
+		if (!templateMask_.empty())
+			maskForQuads = templateMask_;
+		else if (m_TemplData.bHasMask && !m_TemplData.vecMask.empty())
+			maskForQuads = m_TemplData.vecMask[0];
 		if (!scaleSearch_)
 		{
 			int n = matchPrepared(image, templateImage_, m_TemplData, matchResults);
+			if (n < 0)
+				return n;
 			for (MatchResult& r : matchResults)
 				r.Scale = 1.0;
-			return n;
+			FinishPatternHits(matchResults, image, templateImage_, maskForQuads,
+							  matchParam_.iouThreshold, matchParam_.maxCount);
+			return (int)matchResults.size();
 		}
 
 		if (scaledPatterns_.empty())
@@ -1182,7 +1313,7 @@ namespace template_matching {
 		}
 		if (!anyOk)
 			return lastErr;
-		SuppressOverlap(all, matchParam_.iouThreshold, matchParam_.maxCount);
+		FinishPatternHits(all, image, templateImage_, maskForQuads, matchParam_.iouThreshold, matchParam_.maxCount);
 		matchResults.swap(all);
 		return (int)matchResults.size();
 	}

@@ -31,8 +31,11 @@ namespace template_matching
 		bool getMetricsTime();
 
 		// 多实例去重：同一中心的不同角度、相邻尺度上的错位锁，都算同一个目标。
-		// iouThreshold>0 时，较小框被盖住的比例超过该值也去掉；<=0 时按 0.5（Halcon MaxOverlap 默认）。
-		static void suppressMatchOverlap(std::vector<MatchResult>& results, double iouThreshold, int maxCount);
+		// 尺寸接近时，较小框被盖住的比例超过 iouThreshold 也去掉（<=0 时按 0.5，Halcon MaxOverlap 默认）。
+		// 尺寸差一截且中心分开的，不因为大框的空白边包住小框而删掉。
+		// dropWeakNearby：尺度明显不同、中心仍靠近、且分数低一截的，视为错尺度旁瓣。
+		static void suppressMatchOverlap(std::vector<MatchResult>& results, double iouThreshold, int maxCount,
+										 bool dropWeakNearby = false);
 
 	protected:
 

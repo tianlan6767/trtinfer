@@ -216,7 +216,8 @@ namespace template_matching
 		}
 	}
 
-	void BaseMatcher::suppressMatchOverlap(std::vector<MatchResult>& results, double iouThreshold, int maxCount)
+	void BaseMatcher::suppressMatchOverlap(std::vector<MatchResult>& results, double iouThreshold, int maxCount,
+										   bool dropWeakNearby)
 	{
 		if (maxCount < 1)
 			maxCount = 1;
@@ -224,6 +225,7 @@ namespace template_matching
 			return a.Score > b.Score;
 		});
 		// 中心落在较小目标内部，就是同一实例的另一个角度或相邻尺度，跟夹角无关。
+		// 不加大这个比例：同尺度圆环靠得近时，再收紧会把真目标并掉。
 		const double centerFrac = 0.40;
 		const double coverThr = iouThreshold > 0.0 ? iouThreshold : 0.5;
 		std::vector<MatchResult> kept;
@@ -233,13 +235,26 @@ namespace template_matching
 			bool drop = false;
 			for (const MatchResult& prev : kept)
 			{
+				const double sideA = matchBoxSide(cand);
+				const double sideB = matchBoxSide(prev);
+				const double minSide = std::min(sideA, sideB);
+				const double maxSide = std::max(sideA, sideB);
 				const double dist = std::hypot(cand.Center.x - prev.Center.x, cand.Center.y - prev.Center.y);
-				const double minSide = std::min(matchBoxSide(cand), matchBoxSide(prev));
-				if (dist < centerFrac * minSide || smallerCoveredFraction(cand, prev) > coverThr)
-				{
+				const bool similar = maxSide <= minSide * 1.18;
+				if (dist < centerFrac * minSide)
 					drop = true;
-					break;
+				else if (similar && smallerCoveredFraction(cand, prev) > coverThr)
+					drop = true;
+				else if (dropWeakNearby)
+				{
+					const double scaleLo = std::max(1e-6, std::min(cand.Scale, prev.Scale));
+					const double scaleRatio = std::max(cand.Scale, prev.Scale) / scaleLo;
+					// 只打掉明显换了尺度、又贴在更强命中旁边的低分锁。同尺度不进这里。
+					if (scaleRatio > 1.08 && dist < 0.50 * minSide && cand.Score < prev.Score * 0.72)
+						drop = true;
 				}
+				if (drop)
+					break;
 			}
 			if (drop)
 				continue;
