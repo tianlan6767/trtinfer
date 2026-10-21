@@ -14,7 +14,7 @@
    目前支持 **TensorRT8** 和 **TensorRT10** API
 
 3. **传统视觉、读码与标定**  
-   模板匹配（含尺度搜索）、卡尺、Blob、相似度、分水岭、特征、读码和相机标定已在库里。哪些已实现、哪些缺依赖会跳过、哪些还没做，见 [docs/feature_checklist.md](docs/feature_checklist.md)。
+   模板匹配（含尺度搜索）、卡尺、Blob、相似度、金样比对、分水岭、特征、读码和相机标定已在库里。哪些已实现、哪些缺依赖会跳过、哪些还没做，见 [docs/feature_checklist.md](docs/feature_checklist.md)。
 
 ## 文档目录
 
@@ -32,13 +32,14 @@ Python 全部用法（可拷贝）：[docs/python.md](docs/python.md)
 | 形状匹配 | [docs/shape_match.md](docs/shape_match.md) |
 | 卡尺测量 | [docs/caliper.md](docs/caliper.md) |
 | 预处理 / Blob | [docs/blob.md](docs/blob.md) |
+| 金样比对 / 差分缺陷 | [docs/golden.md](docs/golden.md) |
 | 功能清单（已实现 / 依赖可选 / 未实现） | [docs/feature_checklist.md](docs/feature_checklist.md) |
 | 灰度匹配实现变更 | [docs/cv_match_update.md](docs/cv_match_update.md) |
 
 ```bash
 make -j
 make test-caliper test-match test-shape test-deeplab
-make test-blob test-rect test-scale   # 只编经典视觉，不需要 TensorRT
+make test-blob test-rect test-scale test-golden   # 只编经典视觉，不需要 TensorRT
 make test-viz                      # 传统算法可视化，不弹窗，图片在 tests/out_viz/
 # 推理脚本：cd workspace && /usr/local/bin/python3.12 test.py
 ```

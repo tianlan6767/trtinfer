@@ -5,16 +5,121 @@
 #include "cv_calib/calib.h"
 #include "cv_code/code.h"
 #include "cv_feature/feature.h"
+#include "cv_golden/golden.h"
 #include "cv_seg/seg.h"
 #include "cv_sim/similarity.h"
 
 #include <pybind11/stl.h>
+
+#include <sstream>
 
 #if __has_include(<opencv2/aruco.hpp>)
 #include <opencv2/aruco.hpp>
 #endif
 
 namespace py = pybind11;
+
+static void bindGolden(py::module_& m)
+{
+	py::enum_<golden::Polarity>(m, "GoldenPolarity")
+		.value("Both", golden::Polarity::Both)
+		.value("Brighter", golden::Polarity::Brighter)
+		.value("Darker", golden::Polarity::Darker);
+
+	py::enum_<golden::AlignMode>(m, "GoldenAlign")
+		.value("None", golden::AlignMode::None)
+		.value("Translate", golden::AlignMode::Translate)
+		.value("Affine", golden::AlignMode::Affine)
+		.value("Homography", golden::AlignMode::Homography);
+
+	py::class_<golden::GoldenParam>(m, "GoldenParam")
+		.def(py::init<>())
+		.def_readwrite("align", &golden::GoldenParam::align)
+		.def_readwrite("useNcc", &golden::GoldenParam::useNcc)
+		.def_readwrite("alignThreshold", &golden::GoldenParam::alignThreshold)
+		.def_readwrite("alignMargin", &golden::GoldenParam::alignMargin)
+		.def_readwrite("featureRatio", &golden::GoldenParam::featureRatio)
+		.def_readwrite("ransacReproj", &golden::GoldenParam::ransacReproj)
+		.def_readwrite("minInliers", &golden::GoldenParam::minInliers)
+		.def_readwrite("polarity", &golden::GoldenParam::polarity)
+		.def_readwrite("diffThreshold", &golden::GoldenParam::diffThreshold)
+		.def_readwrite("blurSigma", &golden::GoldenParam::blurSigma)
+		.def_readwrite("blurKsize", &golden::GoldenParam::blurKsize)
+		.def_readwrite("roiX", &golden::GoldenParam::roiX)
+		.def_readwrite("roiY", &golden::GoldenParam::roiY)
+		.def_readwrite("roiW", &golden::GoldenParam::roiW)
+		.def_readwrite("roiH", &golden::GoldenParam::roiH)
+		.def_readwrite("enableMorph", &golden::GoldenParam::enableMorph)
+		.def_readwrite("morphOp", &golden::GoldenParam::morphOp)
+		.def_readwrite("morphKsize", &golden::GoldenParam::morphKsize)
+		.def_readwrite("morphIterations", &golden::GoldenParam::morphIterations)
+		.def_readwrite("minArea", &golden::GoldenParam::minArea)
+		.def_readwrite("maxCount", &golden::GoldenParam::maxCount)
+		.def_readwrite("keepDiff", &golden::GoldenParam::keepDiff)
+		.def_readwrite("keepMask", &golden::GoldenParam::keepMask)
+		.def_readwrite("keepAligned", &golden::GoldenParam::keepAligned);
+
+	py::class_<golden::GoldenDefect>(m, "GoldenDefect")
+		.def(py::init<>())
+		.def_readwrite("label", &golden::GoldenDefect::label)
+		.def_readwrite("area", &golden::GoldenDefect::area)
+		.def_readwrite("meanAbs", &golden::GoldenDefect::meanAbs)
+		.def_readwrite("meanSigned", &golden::GoldenDefect::meanSigned)
+		.def_readwrite("center", &golden::GoldenDefect::center)
+		.def_readwrite("left", &golden::GoldenDefect::left)
+		.def_readwrite("top", &golden::GoldenDefect::top)
+		.def_readwrite("width", &golden::GoldenDefect::width)
+		.def_readwrite("height", &golden::GoldenDefect::height)
+		.def("__repr__", [](const golden::GoldenDefect& d) {
+			std::ostringstream oss;
+			oss << "GoldenDefect(area=" << d.area
+				<< ", meanAbs=" << d.meanAbs
+				<< ", meanSigned=" << d.meanSigned
+				<< ", center=(" << d.center.x << "," << d.center.y << ")"
+				<< ", box=(" << d.left << "," << d.top << "," << d.width << "," << d.height << ")"
+				<< ")";
+			return oss.str();
+		});
+
+	py::class_<golden::GoldenResult>(m, "GoldenResult")
+		.def(py::init<>())
+		.def_readwrite("ok", &golden::GoldenResult::ok)
+		.def_readwrite("aligned", &golden::GoldenResult::aligned)
+		.def_readwrite("message", &golden::GoldenResult::message)
+		.def_readwrite("alignMethod", &golden::GoldenResult::alignMethod)
+		.def_readwrite("alignScore", &golden::GoldenResult::alignScore)
+		.def_readwrite("alignInliers", &golden::GoldenResult::alignInliers)
+		.def_readwrite("transform", &golden::GoldenResult::transform)
+		.def_readwrite("meanAbs", &golden::GoldenResult::meanAbs)
+		.def_readwrite("meanSigned", &golden::GoldenResult::meanSigned)
+		.def_readwrite("maxAbs", &golden::GoldenResult::maxAbs)
+		.def_readwrite("defectCount", &golden::GoldenResult::defectCount)
+		.def_readwrite("defectArea", &golden::GoldenResult::defectArea)
+		.def_readwrite("validPixels", &golden::GoldenResult::validPixels)
+		.def_readwrite("defectRatio", &golden::GoldenResult::defectRatio)
+		.def_readwrite("defects", &golden::GoldenResult::defects)
+		.def_readwrite("diff", &golden::GoldenResult::diff)
+		.def_readwrite("signedDiff", &golden::GoldenResult::signedDiff)
+		.def_readwrite("mask", &golden::GoldenResult::mask)
+		.def_readwrite("alignedImage", &golden::GoldenResult::alignedImage)
+		.def("__repr__", [](const golden::GoldenResult& r) {
+			std::ostringstream oss;
+			oss << "GoldenResult(ok=" << (r.ok ? "true" : "false")
+				<< ", method=" << r.alignMethod
+				<< ", score=" << r.alignScore
+				<< ", n=" << r.defectCount
+				<< ", meanAbs=" << r.meanAbs
+				<< ", area=" << r.defectArea
+				<< ", message=" << r.message
+				<< ")";
+			return oss.str();
+		});
+
+	m.def("compare_golden", &golden::compare,
+		  py::arg("test"), py::arg("golden"),
+		  py::arg("param") = golden::GoldenParam(),
+		  py::arg("mask") = cv::Mat());
+}
 
 void bindExtra(py::module_& m)
 {
@@ -39,6 +144,8 @@ void bindExtra(py::module_& m)
 	m.def("compare_similarity", &sim::compare, py::arg("a"), py::arg("b"));
 	m.def("locate_zncc", &sim::locateZncc, py::arg("image"), py::arg("templ"), py::arg("threshold") = 0.6);
 	m.def("locate_ncc", &sim::locateNcc, py::arg("image"), py::arg("templ"), py::arg("threshold") = 0.6);
+
+	bindGolden(m);
 
 	py::class_<seg::Contour>(m, "Contour")
 		.def(py::init<>())

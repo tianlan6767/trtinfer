@@ -28,6 +28,7 @@ import cv2
 | 卡尺 | [caliper.md](caliper.md) |
 | 预处理 / Blob | [blob.md](blob.md) |
 | 对齐相似度 / 平移定位 | [similarity.md](similarity.md) |
+| 金样比对 / 差分缺陷 | [golden.md](golden.md) |
 | 分水岭 / 距离变换 / Canny | [seg.md](seg.md) |
 | ORB / SIFT | [feature.md](feature.md) |
 | 条码 / QR / OCR | [code.md](code.md) |
@@ -334,6 +335,8 @@ for b in cvter.find_blobs(binary, filt):
 
 **ContourStats**：字段与 Blob 类似，`area` 是轮廓折线面积。见 [blob.md](blob.md)。
 
+**GoldenDefect**：`label area meanAbs meanSigned center left top width height`。坐标在金样上。见 [golden.md](golden.md)。
+
 ---
 
 ## 14. 对齐相似度（不是金字塔匹配）
@@ -351,7 +354,28 @@ print(hit.center, hit.score)
 
 ---
 
-## 15. 分水岭和常规边缘
+## 15. 金样比对
+
+平移定位只回答「模板在哪」。这里在对齐之后做绝对差分，再阈值、形态学、Blob，把多出来或少掉的区域收成缺陷。
+
+```python
+p = cvter.GoldenParam()
+p.align = cvter.GoldenAlign.Translate   # None / Translate / Affine / Homography
+p.polarity = cvter.GoldenPolarity.Both  # Brighter / Darker
+p.diffThreshold = 30
+p.minArea = 40
+p.blurSigma = 1.0
+hit = cvter.compare_golden(test, golden, p)          # mask 可选，与金样同尺寸
+print(hit.ok, hit.defectCount, hit.meanAbs, hit.alignMethod)
+for d in hit.defects:
+    print(d.center, d.area, d.meanSigned)
+```
+
+`hit.transform` 是 3×3，把金样坐标变到待测图。`hit.diff` 是绝对差分，`hit.signedDiff` 是 float32 的「待测 - 金样」。见 [golden.md](golden.md)。
+
+---
+
+## 16. 分水岭和常规边缘
 
 ```python
 dist = cvter.distance_transform(binary)
@@ -365,7 +389,7 @@ print(split.found, len(split.regions), split.labels.shape)
 
 ---
 
-## 16. ORB / SIFT
+## 17. ORB / SIFT
 
 ```python
 hit = cvter.match_features(scene, model, cvter.FeatureDetector.ORB, ratio=0.75, ransac_reproj=3.0)
@@ -378,7 +402,7 @@ if cvter.sift_available():
 
 ---
 
-## 17. 条码、QR、OCR
+## 18. 条码、QR、OCR
 
 ```python
 for h in cvter.decode_qr(bgr):
@@ -393,7 +417,7 @@ QR 用 OpenCV `QRCodeDetector`，不加载模型。一维码优先 OpenCV，解�
 
 ---
 
-## 18. 相机标定
+## 19. 相机标定
 
 默认亚像素。板型：`Chessboard`、`Charuco`、`CirclesSymmetric`、`CirclesAsymmetric`、`ArucoGrid`、`CharucoDiamond`、`AprilTag`。没有单独的不对称棋盘检测器，棋盘加标记用 `Charuco`。
 

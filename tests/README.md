@@ -11,6 +11,7 @@ make test-rect
 make test-scale
 make test-match
 make test-shape
+make test-golden
 ```
 
 ## 可视化
@@ -30,9 +31,12 @@ make test-viz
 | `test_caliper_viz.py` | 直线、定向卡尺、圆 |
 | `test_rect_metrology_viz.py` | 矩形和量测 |
 | `test_similarity_viz.py` | 对齐 NCC/ZNCC/SSIM，平移定位 |
+| `test_golden_viz.py` | 金样比对：极性、ROI/掩膜、平移、模糊、ORB 仿射/单应 |
 | `test_seg_viz.py` | 距离变换、Canny、分水岭切开粘连圆 |
 | `test_feature_viz.py` | ORB；SIFT 可用时也跑 |
 | `test_code_viz.py` | QR、EAN-13、OCR |
 | `test_calib_viz.py` | 七种板、亚像素、多视标定、去畸变、YAML、手眼 |
 
-螺母样图不在仓库里时，对应用例跳过。OpenCV 没编 aruco 时跳过 ChArUco / ArUco / 菱形 / AprilTag。没有 SIFT 时跳过 SIFT。没有 Tesseract 时 OCR 用例跳过。一维码在 OpenCV 解不出时走 zbar。
+螺母样图不在仓库里时，对应用例跳过。OpenCV 没编 aruco 时跳过 ChArUco / ArUco / 菱形 / AprilTag。没有 SIFT 时跳过 SIFT。没有 Tesseract 时 OCR 用例跳过。一维码在 OpenCV 解不出时走 zbar。金样比对的夹具在 `tests/synth.py` 里现场生成，不依赖螺母图。
+
+Windows 不走这份 Makefile。按 [docs/env_windows.md](../docs/env_windows.md) 用 CMake 时，把 `src/cv_golden/golden.cpp` 和 Makefile 变量 `viz_srcs` 里的其它传统算法源一起编成名为 `cvter` 的 pybind 模块（对应 Linux 的 `objs/pytrad/cvter.so`），再跑 `tests/test_golden_viz.py`。只验算法、不画图时，用与 `make test-golden` 相同的源文件编 `tests/test_golden.cpp`。

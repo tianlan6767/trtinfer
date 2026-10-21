@@ -27,7 +27,7 @@ hit = cvter.locate_ncc(image, templ, threshold=0.6)
 print(hit.found, hit.score, hit.topLeft, hit.center)
 ```
 
-尺寸不同或空图时 `compare_similarity` 的 `found` 为 false。`locate_*` 分数低于阈值时 `found` 为 false。
+尺寸不同或空图时 `compare_similarity` 的 `found` 为 false。`locate_*` 分数低于阈值时 `found` 为 false。对齐之后做差分、找缺陷见 [golden.md](golden.md)，平移定位就是那条 `GoldenAlign.Translate` 在用的接口。
 
 | 字段 | 含义 |
 |---|---|

@@ -1,6 +1,6 @@
 # 工业视觉功能清单
 
-状态以当前 `qa` 为准（PR #5，`cc5baeb`）。这里只标「能不能用」，参数和示例仍看各模块文档。可视化脚本和跳过条件见 [tests/README.md](../tests/README.md)，下面不重复那张表。
+状态以当前 `qa` 为准。这里只标「能不能用」，参数和示例仍看各模块文档。可视化脚本和跳过条件见 [tests/README.md](../tests/README.md)，下面不重复那张表。
 
 | 状态 | 含义 |
 |---|---|
@@ -20,6 +20,7 @@
 | 预处理与 Blob | 阈值、形态学、连通域 / 轮廓 | [blob.md](blob.md) |
 | 卡尺与量测 | 直线、圆、找矩形，以及距离 / 角度辅助 | [caliper.md](caliper.md) |
 | ROI 相似度 | 对齐后的 NCC / ZNCC / 直方图 / SSIM，以及只做平移的定位 | [similarity.md](similarity.md) |
+| 金样比对 / 差分缺陷 | 可选平移（ZNCC/NCC）或 ORB 仿射 / 单应对齐，绝对差分与有符号差分，极性、模糊、ROI / 掩膜，形态学之后取 Blob。不需要 GPU | [golden.md](golden.md) |
 | 常规分割 | 分水岭、距离变换、Canny、切开粘连目标 | [seg.md](seg.md) |
 | 稀疏特征 | ORB。OpenCV 带 SIFT 时同一接口也走 SIFT | [feature.md](feature.md) |
 | 读码与 OCR | QR；一维码先 OpenCV、解不出再 zbar；OCR 走 Tesseract（可选） | [code.md](code.md) |
@@ -55,7 +56,6 @@
 
 | 能力 | 现状 |
 |---|---|
-| 传统黄金模板比对 / 缺陷差分 | 还没有这块算法 |
 | DFINE 的 Python 绑定与导出打磨 | C++ `load()` 已有 `DFINE` / `DFINESAHI`，Python 侧尚未导出 |
 | 相机 SDK 采图，以及产线标定 / 手眼集成层 | 标定、去畸变、手眼算法已有；相机 SDK 和接到设备上的集成层还没有 |
 | HMI / 上层集成 | 还没有界面和上层对接层 |
@@ -66,4 +66,4 @@
 make test-viz
 ```
 
-不调用 `imshow`。图片写到 `tests/out_viz/`（已 gitignore）。各脚本覆盖预处理、匹配、卡尺、相似度、分割、特征、读码和七种标定板，说明见 [tests/README.md](../tests/README.md)。
+不调用 `imshow`。图片写到 `tests/out_viz/`（已 gitignore）。各脚本覆盖预处理、匹配、卡尺、相似度、金样比对、分割、特征、读码和七种标定板，说明见 [tests/README.md](../tests/README.md)。
