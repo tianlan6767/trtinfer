@@ -45,7 +45,7 @@ struct LIB_API CoarseRefineParam
 	double edgeMinMag = 18.0;
 	double edgeContrast = 0.0;
 	int maxEdgePoints = 320;
-	// 0=浮点形状分；16=顶层 16 档方向粗搜。含义同 MatcherParam.oriBins。
+	// 0=浮点形状分；16=顶层 16 档方向响应图粗搜。含义同 MatcherParam.oriBins。
 	int oriBins = 0;
 	bool usePolarity = true;
 	double greediness = 0.9;

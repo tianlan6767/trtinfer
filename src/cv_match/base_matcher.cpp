@@ -222,7 +222,15 @@ namespace template_matching
 		if (maxCount < 1)
 			maxCount = 1;
 		std::sort(results.begin(), results.end(), [](const MatchResult& a, const MatchResult& b) {
-			return a.Score > b.Score;
+			if (a.Score != b.Score)
+				return a.Score > b.Score;
+			if (a.Center.y != b.Center.y)
+				return a.Center.y < b.Center.y;
+			if (a.Center.x != b.Center.x)
+				return a.Center.x < b.Center.x;
+			if (a.Angle != b.Angle)
+				return a.Angle < b.Angle;
+			return a.Scale < b.Scale;
 		});
 		// 中心落在较小目标内部，就是同一实例的另一个角度或相邻尺度，跟夹角无关。
 		// 不加大这个比例：同尺度圆环靠得近时，再收紧会把真目标并掉。

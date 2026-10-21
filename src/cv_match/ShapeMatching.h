@@ -28,6 +28,12 @@ struct ShapeCandidate
 	double angle = 0;
 	double score = 0;
 	double scale = 1.0;
+	// 顶层贴边用浮点粗分得到的种子。后面的去重和精修窗口都按 oriBins=0 那条走，
+	// 不和响应图的内部高峰混在一个名额里。
+	bool fromBorder = false;
+	// 内部被更高的响应图峰压住、又从环带里捞回来的种子。第一层位置窗口用 ±4，
+	// 角度仍大约 ±12°。贴边种子不会设这个标记。
+	bool narrowRefine = false;
 };
 
 class ShapeMatcher : public BaseMatcher
