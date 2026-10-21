@@ -845,10 +845,12 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCo
 }
 
 // 内部响应图上，弱真峰常常落在更高假峰的整幅去重半径里（大约 8～16px）。
-// 假峰到末层掉到 0.5 下面，真峰已经不在名单里。每个已留种子只捞环带里分数最高的一个，
-// 再按离种子更远优先留最多 kMaxInteriorRescue 个。贴边名单不走这里。
+// 假峰到末层掉到 0.5 下面，真峰已经不在名单里。每个已留种子只捞环带里的一个局部峰
+// （周围大约 6px 没有更高分），同分平台收成质心，再按分数最多留 kMaxInteriorRescue 个。
+// 贴边名单不走这里。不按“离种子最远的格点”捞：那一格经常是假峰尾巴，不是另一件。
 constexpr double kInteriorRescueMin = 8.0;
-constexpr int kMaxInteriorRescue = 40;
+constexpr double kRingSep = 6.0;
+constexpr int kMaxInteriorRescue = 24;
 
 void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int maxCount)
 {
@@ -862,9 +864,6 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 		double w = 1;
 		double angC = 0;
 		double angS = 0;
-		bool hasRing = false;
-		ShapeCandidate ring;
-		double ringDist = 0;
 	};
 	std::vector<Acc> kept;
 	kept.reserve(std::min((int)cands.size(), std::max(maxCount, 1)));
@@ -906,7 +905,6 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 		if (match >= 0)
 		{
 			Acc& a = kept[match];
-			const double dist = std::hypot(c.cx - a.seedX, c.cy - a.seedY);
 			if (c.score >= a.c.score - 1e-4)
 			{
 				const double w = a.w;
@@ -923,15 +921,6 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 				}
 				a.w = w + 1.0;
 			}
-			else if (dist >= kInteriorRescueMin && c.score >= 0.42 && (!a.hasRing || dist > a.ringDist))
-			{
-				// 环带里留下离种子更远的那个。紧挨着的高分多半是同一片平台，更远的才像另一件。
-				a.ring = c;
-				a.ring.fromBorder = false;
-				a.ring.narrowRefine = true;
-				a.ringDist = dist;
-				a.hasRing = true;
-			}
 			continue;
 		}
 		if ((int)kept.size() >= maxCount)
@@ -947,32 +936,172 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 		grid[CellKey{ix, iy}].push_back((int)kept.size());
 		kept.push_back(a);
 	}
-	std::vector<Acc*> rings;
-	rings.reserve(kept.size());
-	for (auto& a : kept)
+
+	// 每个像素只留排序后的第一名。cands 已按 candidatePrecedes 排过，先出现的就是该像素最高分。
+	struct PixKey
 	{
-		if (a.hasRing)
-			rings.push_back(&a);
+		int x;
+		int y;
+		bool operator==(const PixKey& o) const { return x == o.x && y == o.y; }
+	};
+	struct PixHash
+	{
+		size_t operator()(const PixKey& k) const
+		{
+			return (std::hash<int>{}(k.x) * 1315423911u) ^ std::hash<int>{}(k.y);
+		}
+	};
+	std::unordered_map<PixKey, int, PixHash> bestAt;
+	bestAt.reserve(std::min(cands.size(), (size_t)4096));
+	for (int i = 0; i < (int)cands.size(); ++i)
+	{
+		if (cands[i].score < 0.42)
+			break;
+		const PixKey pk{(int)std::lround(cands[i].cx), (int)std::lround(cands[i].cy)};
+		if (!bestAt.count(pk))
+			bestAt.emplace(pk, i);
 	}
-	std::sort(rings.begin(), rings.end(), [](const Acc* a, const Acc* b) {
-		if (a->ringDist != b->ringDist)
-			return a->ringDist > b->ringDist;
-		return candidatePrecedes(a->ring, b->ring);
+	std::vector<std::pair<PixKey, int>> peaks;
+	peaks.reserve(bestAt.size());
+	for (const auto& kv : bestAt)
+		peaks.push_back(kv);
+	std::sort(peaks.begin(), peaks.end(), [](const std::pair<PixKey, int>& a, const std::pair<PixKey, int>& b) {
+		if (a.first.y != b.first.y)
+			return a.first.y < b.first.y;
+		if (a.first.x != b.first.x)
+			return a.first.x < b.first.x;
+		return a.second < b.second;
 	});
+	const double sepCell = std::max(kRingSep, 1e-6);
+	std::unordered_map<CellKey, std::vector<int>, CellHash> peakGrid;
+	for (int pi = 0; pi < (int)peaks.size(); ++pi)
+	{
+		const CellKey ck{(int)std::floor(peaks[pi].first.x / sepCell),
+						 (int)std::floor(peaks[pi].first.y / sepCell)};
+		peakGrid[ck].push_back(pi);
+	}
+	std::vector<int> bestMode(kept.size(), -1);
+	for (int pi = 0; pi < (int)peaks.size(); ++pi)
+	{
+		const int idx = peaks[pi].second;
+		const ShapeCandidate& c = cands[idx];
+		bool dominated = false;
+		const int sx = (int)std::floor(peaks[pi].first.x / sepCell);
+		const int sy = (int)std::floor(peaks[pi].first.y / sepCell);
+		for (int oy = -1; oy <= 1 && !dominated; ++oy)
+		{
+			for (int ox = -1; ox <= 1 && !dominated; ++ox)
+			{
+				const auto it = peakGrid.find(CellKey{sx + ox, sy + oy});
+				if (it == peakGrid.end())
+					continue;
+				for (int nj : it->second)
+				{
+					if (nj == pi)
+						continue;
+					const ShapeCandidate& n = cands[peaks[nj].second];
+					if (std::hypot(n.cx - c.cx, n.cy - c.cy) >= kRingSep)
+						continue;
+					if (n.score > c.score + 1e-4 || (n.score >= c.score - 1e-4 && peaks[nj].second < idx))
+						dominated = true;
+				}
+			}
+		}
+		if (dominated)
+			continue;
+		int match = -1;
+		const int ix = (int)std::floor(c.cx / cell);
+		const int iy = (int)std::floor(c.cy / cell);
+		for (int oy = -1; oy <= 1; ++oy)
+		{
+			for (int ox = -1; ox <= 1; ++ox)
+			{
+				const auto it = grid.find(CellKey{ix + ox, iy + oy});
+				if (it == grid.end())
+					continue;
+				for (int id : it->second)
+				{
+					const double dist = std::hypot(c.cx - kept[id].seedX, c.cy - kept[id].seedY);
+					if (dist >= kInteriorRescueMin && dist < minDist && (match < 0 || id < match))
+						match = id;
+				}
+			}
+		}
+		if (match < 0)
+			continue;
+		if (bestMode[match] < 0 || candidatePrecedes(c, cands[bestMode[match]]))
+			bestMode[match] = idx;
+	}
+
+	std::vector<ShapeCandidate> rings;
+	rings.reserve(std::min((int)kept.size(), kMaxInteriorRescue));
+	for (int id = 0; id < (int)kept.size(); ++id)
+	{
+		if (bestMode[id] < 0)
+			continue;
+		const ShapeCandidate& src = cands[bestMode[id]];
+		double sx = src.cx;
+		double sy = src.cy;
+		double w = 1;
+		double angC = std::cos(src.angle * kD2R);
+		double angS = std::sin(src.angle * kD2R);
+		const int px = (int)std::lround(src.cx);
+		const int py = (int)std::lround(src.cy);
+		const int scx = (int)std::floor(px / sepCell);
+		const int scy = (int)std::floor(py / sepCell);
+		for (int oy = -1; oy <= 1; ++oy)
+		{
+			for (int ox = -1; ox <= 1; ++ox)
+			{
+				const auto it = peakGrid.find(CellKey{scx + ox, scy + oy});
+				if (it == peakGrid.end())
+					continue;
+				for (int nj : it->second)
+				{
+					const ShapeCandidate& n = cands[peaks[nj].second];
+					if (std::lround(n.cx) == px && std::lround(n.cy) == py)
+						continue;
+					if (n.score < src.score - 1e-4)
+						continue;
+					if (std::hypot(n.cx - src.cx, n.cy - src.cy) > kRingSep)
+						continue;
+					sx += n.cx;
+					sy += n.cy;
+					w += 1.0;
+					double dAng = std::fabs(n.angle - src.angle);
+					if (dAng > 180.0)
+						dAng = 360.0 - dAng;
+					if (dAng <= 4.0)
+					{
+						angC += std::cos(n.angle * kD2R);
+						angS += std::sin(n.angle * kD2R);
+					}
+				}
+			}
+		}
+		ShapeCandidate ring = src;
+		ring.cx = sx / w;
+		ring.cy = sy / w;
+		ring.angle = std::atan2(angS, angC) * kR2D;
+		ring.fromBorder = false;
+		ring.narrowRefine = true;
+		rings.push_back(ring);
+	}
+	std::sort(rings.begin(), rings.end(), candidatePrecedes);
 	if ((int)rings.size() > kMaxInteriorRescue)
 		rings.resize(kMaxInteriorRescue);
 	cands.clear();
 	cands.reserve(kept.size() + rings.size());
 	for (const auto& a : kept)
 		cands.push_back(a.c);
-	for (const Acc* a : rings)
-		cands.push_back(a->ring);
+	for (const auto& ring : rings)
+		cands.push_back(ring);
 }
 
 // 贴边种子和内部种子分开去重。内部响应图峰可以在下一层浮点分掉到阈值下，
 // 但不能在那之前把贴边残件从名单里抹掉。
 void nmsKeepOrigins(std::vector<ShapeCandidate>& cands, double minDist, int maxCount, bool blendInterior,
-					double blendRadius = 1e9)
+					double blendRadius = 1e9, bool preserveNarrow = false)
 {
 	std::vector<ShapeCandidate> border;
 	std::vector<ShapeCandidate> interior;
@@ -985,7 +1114,35 @@ void nmsKeepOrigins(std::vector<ShapeCandidate>& cands, double minDist, int maxC
 		else
 			interior.push_back(c);
 	}
+	// 中间层的浮点分还没落到末层。假峰这时仍可能高于真峰，整幅半径会把刚捞回的内部种子再删掉。
+	// 只把 narrowRefine 留到末层，末层再用浮点分做整幅去重。贴边名单不走这条。
+	std::vector<ShapeCandidate> pinned;
+	if (preserveNarrow)
+	{
+		for (const auto& c : interior)
+		{
+			if (c.narrowRefine)
+				pinned.push_back(c);
+		}
+	}
 	nmsCandidates(interior, minDist, maxCount, blendInterior, blendRadius);
+	if (preserveNarrow)
+	{
+		for (const auto& r : pinned)
+		{
+			bool present = false;
+			for (const auto& k : interior)
+			{
+				if (k.cx == r.cx && k.cy == r.cy && k.angle == r.angle && k.scale == r.scale)
+				{
+					present = true;
+					break;
+				}
+			}
+			if (!present)
+				interior.push_back(r);
+		}
+	}
 	nmsCandidates(border, minDist, maxCount, false);
 	cands.clear();
 	cands.reserve(interior.size() + border.size());
@@ -1429,7 +1586,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 										  2.0 * (double)modelRadius(mdl.edges));
 		const double md = 0.45 * std::max(4.0, layerSpan);
 		if (quantCoarse)
-			nmsKeepOrigins(next, md, refineKeepCount(matchParam_.maxCount, true), false);
+			nmsKeepOrigins(next, md, refineKeepCount(matchParam_.maxCount, true), false, 1e9,
+						   layer != stopLayer);
 		else
 			nmsCandidates(next, md, refineKeepCount(matchParam_.maxCount, false));
 		refined.swap(next);
