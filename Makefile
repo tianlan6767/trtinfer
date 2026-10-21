@@ -178,6 +178,19 @@ test-golden :
 		$$(pkg-config --cflags --libs opencv4)
 	@$(objdir)/test_golden
 
+# 尺寸测量：几何、卡尺增强、拟合、量规、标定尺寸。不链 TensorRT / CUDA。
+test-measure :
+	@mkdir -p $(objdir)
+	@$(cc) -std=$(stdcpp) -O2 -fopenmp -pthread -I$(srcdir) \
+		$(CURDIR)/tests/test_measure.cpp \
+		$(srcdir)/cv_caliper/caliper.cpp \
+		$(srcdir)/cv_caliper/metrology.cpp \
+		$(srcdir)/cv_measure/measure.cpp \
+		$(srcdir)/cv_calib/calib.cpp \
+		-o $(objdir)/test_measure \
+		$$(pkg-config --cflags --libs opencv4)
+	@$(objdir)/test_measure
+
 # 传统视觉可视化：不链 TensorRT / CUDA，不弹窗，图片写到 tests/out_viz/。
 # 已有 workspace/cvter.so 时仍编这份无 GPU 模块，保证新接口在没编过完整 so 时也能测。
 viz_py_dir := $(objdir)/pytrad
@@ -200,7 +213,9 @@ viz_srcs := \
 	$(srcdir)/cv_seg/seg.cpp \
 	$(srcdir)/cv_feature/feature.cpp \
 	$(srcdir)/cv_code/code.cpp \
-	$(srcdir)/cv_calib/calib.cpp
+	$(srcdir)/cv_calib/calib.cpp \
+	$(srcdir)/cv_measure/measure.cpp \
+	$(srcdir)/cv_measure/bind.cpp
 
 $(viz_so): $(viz_srcs)
 	@mkdir -p $(viz_py_dir)
@@ -222,6 +237,7 @@ test-viz : $(viz_so)
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_feature_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_code_viz.py -v
 	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_calib_viz.py -v
+	@PYTHONPATH=$(CURDIR)/$(viz_py_dir) $(pyexec) $(CURDIR)/tests/test_measure_viz.py -v
 
 test-deeplab : $(name)
 	@PYTHONPATH=$(CURDIR)/$(workdir) $(python) $(CURDIR)/tests/test_deeplabv3.py -v
@@ -266,4 +282,4 @@ $(objdir)/%.cu.mk : $(srcdir)/%.cu
 clean :
 	@rm -rf $(objdir) $(workdir)/$(name) $(workdir)/pro  $(workdir)/imgs
 
-.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab test-scale test-blob test-rect test-golden test-viz
+.PHONY : clean run $(name) runpro test-caliper test-match test-shape test-deeplab test-scale test-blob test-rect test-golden test-measure test-viz

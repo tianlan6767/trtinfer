@@ -103,7 +103,7 @@ circle = cvter.find_circle(gray, cx, cy, 70, 20, 0, 360, param)
 | 参数 | 默认 | 含义 | 怎么调 |
 |---|---|---|---|
 | `polarity` | `LightToDark` | 沿搜索方向的明暗 | **必须和真实边缘一致**。零件→黑背景（左亮右暗）用 `LightToDark`。黑洞由内向外用 `DarkToLight`。极性反了会 `found=false` 或贴到另一条边。不确定且框内只有一条边时可用 `Both`。 |
-| `select` | `Strongest` | 一条剖面上取哪条边 | 框里只有一条目标边：保持 `Strongest`。有内外两条边：先碰到的用 `First`，后碰到的用 `Last`。 |
+| `select` | `Strongest` | 一条剖面上取哪条边 | 框里只有一条目标边：保持 `Strongest`。先碰到的用 `First`，后碰到的用 `Last`。第 N 条（从 0 计）用 `Nth`，序号在 `edgeIndex`。`All` 在单线接口上等价于第 0 条局部峰；要每一条边用 `find_edges`。 |
 | `contrast` | 18 | 灰度落差阈值 | 漏检、边很糊：降到 8～12。抓到拉丝/噪声：升到 25～40。`numPoints` 经常为 0 说明太高。 |
 | `stride` | 2 | 卡尺间距（px） | 更密更稳更慢：1。更快：3～4。`numCalipers=0` 时条数 ≈ 边长/`stride`。 |
 | `numCalipers` | 0（自动） | 强制条数 | 一般不用改。圆想固定 36 条就设 36。 |
@@ -112,6 +112,7 @@ circle = cvter.find_circle(gray, cx, cy, 70, 20, 0, 360, param)
 | `outlierRatio` | 0.3 | 拟合时丢掉最差点的比例 | 框扫到圆角/毛刺：0.3～0.4。边很干净、点太少：降到 0.1。 |
 | `minPoints` | 8 | 最少有效边缘点 | 短边可降到 5；要更严就升到 12。 |
 | `radialInward` | `False` | 圆的搜索方向 | `False`：由内向外。`True`：由外向内。极性仍按搜索方向解释。 |
+| `edgeIndex` | 0 | `Nth` 的序号 | 沿搜索方向从 0 开始。双边厚度取 `edgeIndex` 和它的下一条。 |
 
 ## 本仓库螺母图推荐值
 
@@ -211,3 +212,5 @@ auto summary = metrology::summarizeRectangle(tl, tr, br, bl);
 ```
 
 不依赖 TensorRT 的测试：`make test-rect`。完整模块编出来后跑 `tests/test_rect_metrology.py`。叠加图：`make test-viz`（`tests/test_caliper_viz.py`、`tests/test_rect_metrology_viz.py`），输出在 `tests/out_viz/`。
+
+多边、双边厚度、弧段、开口，以及拟合、形位公差、包围尺寸和标定尺寸见 [measure.md](measure.md)。

@@ -15,7 +15,11 @@ enum class Polarity {
 enum class EdgeSelect {
     First = 0,
     Last = 1,
-    Strongest = 2
+    Strongest = 2,
+    // 一条剖面上的全部边缘，按搜索方向编号。单边接口只返回第 edgeIndex 条（默认 0）。
+    All = 3,
+    // 沿搜索方向第 edgeIndex 条过阈值的局部峰，从 0 开始。
+    Nth = 4
 };
 
 struct CaliperParam {
@@ -36,6 +40,8 @@ struct CaliperParam {
     int minPoints = 8;
     // 圆：true=从外向内搜
     bool radialInward = false;
+    // Nth / All 的单边接口：沿搜索方向的边缘序号，从 0 开始。
+    int edgeIndex = 0;
 };
 
 struct LineResult {
@@ -119,5 +125,132 @@ RectResult findRectangleBox(const cv::Mat& image,
                             double x0, double y0, double x1, double y1,
                             double search,
                             const CaliperParam& param = CaliperParam());
+
+struct IndexedLine {
+    int index = 0;
+    LineResult line;
+};
+
+struct IndexedCircle {
+    int index = 0;
+    CircleResult circle;
+};
+
+struct MultiLineResult {
+    bool found = false;
+    std::vector<IndexedLine> edges;
+};
+
+struct MultiCircleResult {
+    bool found = false;
+    std::vector<IndexedCircle> edges;
+};
+
+// 圆弧段。startDeg/endDeg 是测得的图像角（度，y 向下）；spanDeg 为张角。
+struct ArcResult {
+    bool found = false;
+    cv::Point2d center;
+    double radius = 0.0;
+    double rms = 0.0;
+    double startDeg = 0.0;
+    double endDeg = 0.0;
+    double spanDeg = 0.0;
+    double arcLength = 0.0;
+    double chord = 0.0;
+    cv::Point2d chordStart;
+    cv::Point2d chordEnd;
+    int numPoints = 0;
+    int numInliers = 0;
+    std::vector<cv::Point2d> points;
+    std::vector<cv::Point2d> inliers;
+};
+
+// 沿同一组卡尺取两条边，测壁厚或槽宽。edge0 是序号 edgeIndex，edge1 是下一条。
+// radial 为 true 时读 circle0 / circle1，width = |r1 - r0|。
+struct DualWidthResult {
+    bool found = false;
+    bool radial = false;
+    double width = 0.0;
+    double rms = 0.0;
+    double angle = 0.0;
+    int numSamples = 0;
+    LineResult edge0;
+    LineResult edge1;
+    CircleResult circle0;
+    CircleResult circle1;
+    std::vector<double> samples;
+};
+
+// 开口两侧对向卡尺。phi 与 findLineOriented 相同，沿边缘方向。
+struct GapResult {
+    bool found = false;
+    bool parallel = false;
+    double width = 0.0;
+    double angle = 0.0;
+    double rms = 0.0;
+    LineResult first;
+    LineResult second;
+    cv::Point2d p1;
+    cv::Point2d p2;
+};
+
+// 沿搜索方向的每一条边各拟合一条，序号 0 是最先碰到的。select 不参与这里。
+MultiLineResult findEdgesOriented(const cv::Mat& image,
+                                  cv::Point2d center,
+                                  double phi,
+                                  double length1,
+                                  double length2,
+                                  const CaliperParam& param = CaliperParam());
+
+MultiLineResult findEdgesRect(const cv::Mat& image,
+                              double x0, double y0, double x1, double y1,
+                              bool searchHorizontal = true,
+                              const CaliperParam& param = CaliperParam());
+
+// 径向每一条边各拟合一个圆。select 不参与，序号 0 是搜索方向上先碰到的。
+MultiCircleResult findCircleEdges(const cv::Mat& image,
+                                  cv::Point2d center,
+                                  double radius,
+                                  double search,
+                                  double startDeg = 0.0,
+                                  double endDeg = 360.0,
+                                  const CaliperParam& param = CaliperParam());
+
+// 与 findCircle 相同的弧段采样，并给出张角、弧长、弦长。
+ArcResult findArc(const cv::Mat& image,
+                  cv::Point2d center,
+                  double radius,
+                  double search,
+                  double startDeg = 0.0,
+                  double endDeg = 360.0,
+                  const CaliperParam& param = CaliperParam());
+
+// 搜索窗要盖住两条边。极性相反时用 Both。width 是两条拟合边的间距。
+DualWidthResult measureDualWidth(const cv::Mat& image,
+                                 cv::Point2d center,
+                                 double phi,
+                                 double length1,
+                                 double length2,
+                                 const CaliperParam& param = CaliperParam());
+
+// 环形壁厚。radius 取在两条边之间，search 要盖住内边和外边。
+DualWidthResult measureRadialWidth(const cv::Mat& image,
+                                   cv::Point2d center,
+                                   double radius,
+                                   double search,
+                                   double startDeg = 0.0,
+                                   double endDeg = 360.0,
+                                   const CaliperParam& param = CaliperParam());
+
+// halfGap 是开口半宽，卡尺中心落在预期的两条边上，向开口内侧搜索。
+GapResult measureGap(const cv::Mat& image,
+                     cv::Point2d center,
+                     double phi,
+                     double length1,
+                     double halfGap,
+                     double search,
+                     const CaliperParam& param = CaliperParam());
+
+GapResult gapBetween(const LineResult& a, const LineResult& b);
 
 }  // namespace caliper

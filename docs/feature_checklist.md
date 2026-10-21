@@ -18,7 +18,8 @@
 | 灰度模板匹配 | `MatcherType.PATTERN`（NCC）。尺度搜索：`minScale` / `maxScale` / `scaleStep` / `numScales` | [pattern_match.md](pattern_match.md) |
 | 形状匹配 | `MatcherType.SHAPE`。尺度参数与 PATTERN 同一组 | [shape_match.md](shape_match.md) |
 | 预处理与 Blob | 阈值、形态学、连通域 / 轮廓 | [blob.md](blob.md) |
-| 卡尺与量测 | 直线、圆、找矩形，以及距离 / 角度辅助 | [caliper.md](caliper.md) |
+| 卡尺与量测 | 直线、圆、找矩形，多边 / 双边 / 弧段 / 开口，以及距离 / 角度辅助 | [caliper.md](caliper.md)、[measure.md](measure.md) |
+| 尺寸测量 | 点线圆几何，最小二乘 / RANSAC 拟合与形位公差，包围尺寸与量规，像素到物理单位和夹具坐标 | [measure.md](measure.md) |
 | ROI 相似度 | 对齐后的 NCC / ZNCC / 直方图 / SSIM，以及只做平移的定位 | [similarity.md](similarity.md) |
 | 金样比对 / 差分缺陷 | 可选平移（ZNCC/NCC）或 ORB 仿射 / 单应对齐，绝对差分与有符号差分，极性、模糊、ROI / 掩膜，形态学之后取 Blob。不需要 GPU | [golden.md](golden.md) |
 | 常规分割 | 分水岭、距离变换、Canny、切开粘连目标 | [seg.md](seg.md) |
@@ -66,4 +67,4 @@
 make test-viz
 ```
 
-不调用 `imshow`。图片写到 `tests/out_viz/`（已 gitignore）。各脚本覆盖预处理、匹配、卡尺、相似度、金样比对、分割、特征、读码和七种标定板，说明见 [tests/README.md](../tests/README.md)。
+不调用 `imshow`。图片写到 `tests/out_viz/`（已 gitignore）。各脚本覆盖预处理、匹配、卡尺、尺寸、相似度、金样比对、分割、特征、读码和七种标定板，说明见 [tests/README.md](../tests/README.md)。只跑尺寸数值、不画图：`make test-measure`。

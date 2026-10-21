@@ -87,6 +87,51 @@ public:
     {
         return caliper::findRectangleBox(img, x0, y0, x1, y1, search, param);
     }
+
+    caliper::MultiLineResult find_edges(const cv::Mat& img, double x0, double y0, double x1, double y1,
+                                        bool search_horizontal) const
+    {
+        return caliper::findEdgesRect(img, x0, y0, x1, y1, search_horizontal, param);
+    }
+
+    caliper::MultiLineResult find_edges_oriented(const cv::Mat& img, double cx, double cy, double phi_deg,
+                                                 double length1, double length2) const
+    {
+        return caliper::findEdgesOriented(img, cv::Point2d(cx, cy), phi_deg * CV_PI / 180.0,
+                                          length1, length2, param);
+    }
+
+    caliper::MultiCircleResult find_circle_edges(const cv::Mat& img, double cx, double cy, double radius,
+                                                 double search, double start_deg, double end_deg) const
+    {
+        return caliper::findCircleEdges(img, cv::Point2d(cx, cy), radius, search, start_deg, end_deg, param);
+    }
+
+    caliper::ArcResult find_arc(const cv::Mat& img, double cx, double cy, double radius, double search,
+                                double start_deg, double end_deg) const
+    {
+        return caliper::findArc(img, cv::Point2d(cx, cy), radius, search, start_deg, end_deg, param);
+    }
+
+    caliper::DualWidthResult measure_dual_width(const cv::Mat& img, double cx, double cy, double phi_deg,
+                                                double length1, double length2) const
+    {
+        return caliper::measureDualWidth(img, cv::Point2d(cx, cy), phi_deg * CV_PI / 180.0,
+                                         length1, length2, param);
+    }
+
+    caliper::DualWidthResult measure_radial_width(const cv::Mat& img, double cx, double cy, double radius,
+                                                  double search, double start_deg, double end_deg) const
+    {
+        return caliper::measureRadialWidth(img, cv::Point2d(cx, cy), radius, search, start_deg, end_deg, param);
+    }
+
+    caliper::GapResult measure_gap(const cv::Mat& img, double cx, double cy, double phi_deg, double length1,
+                                   double half_gap, double search) const
+    {
+        return caliper::measureGap(img, cv::Point2d(cx, cy), phi_deg * CV_PI / 180.0,
+                                   length1, half_gap, search, param);
+    }
 };
 
 
@@ -195,6 +240,8 @@ void bindTrad(py::module_& m)
         .value("First", caliper::EdgeSelect::First)
         .value("Last", caliper::EdgeSelect::Last)
         .value("Strongest", caliper::EdgeSelect::Strongest)
+        .value("All", caliper::EdgeSelect::All)
+        .value("Nth", caliper::EdgeSelect::Nth)
         .export_values();
 
     py::class_<caliper::CaliperParam>(m, "CaliperParam")
@@ -209,6 +256,7 @@ void bindTrad(py::module_& m)
         .def_readwrite("outlierRatio", &caliper::CaliperParam::outlierRatio)
         .def_readwrite("minPoints", &caliper::CaliperParam::minPoints)
         .def_readwrite("radialInward", &caliper::CaliperParam::radialInward)
+        .def_readwrite("edgeIndex", &caliper::CaliperParam::edgeIndex)
         .def("__repr__", [](const caliper::CaliperParam& p) {
             std::ostringstream oss;
             oss << "CaliperParam(polarity=" << static_cast<int>(p.polarity)
@@ -221,6 +269,7 @@ void bindTrad(py::module_& m)
                 << ", outlierRatio=" << p.outlierRatio
                 << ", minPoints=" << p.minPoints
                 << ", radialInward=" << (p.radialInward ? "true" : "false")
+                << ", edgeIndex=" << p.edgeIndex
                 << ")";
             return oss.str();
         });
@@ -288,7 +337,28 @@ void bindTrad(py::module_& m)
              py::arg("angle_deg") = 0.0, py::arg("search") = 12.0)
         .def("find_rectangle_box", &CaliperWrapper::find_rectangle_box,
              py::arg("image"), py::arg("x0"), py::arg("y0"), py::arg("x1"), py::arg("y1"),
-             py::arg("search") = 12.0);
+             py::arg("search") = 12.0)
+        .def("find_edges", &CaliperWrapper::find_edges,
+             py::arg("image"), py::arg("x0"), py::arg("y0"), py::arg("x1"), py::arg("y1"),
+             py::arg("search_horizontal") = true)
+        .def("find_edges_oriented", &CaliperWrapper::find_edges_oriented,
+             py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("phi_deg"),
+             py::arg("length1"), py::arg("length2"))
+        .def("find_circle_edges", &CaliperWrapper::find_circle_edges,
+             py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("radius"),
+             py::arg("search") = 15.0, py::arg("start_deg") = 0.0, py::arg("end_deg") = 360.0)
+        .def("find_arc", &CaliperWrapper::find_arc,
+             py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("radius"),
+             py::arg("search") = 15.0, py::arg("start_deg") = 0.0, py::arg("end_deg") = 360.0)
+        .def("measure_dual_width", &CaliperWrapper::measure_dual_width,
+             py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("phi_deg"),
+             py::arg("length1"), py::arg("length2"))
+        .def("measure_radial_width", &CaliperWrapper::measure_radial_width,
+             py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("radius"),
+             py::arg("search") = 15.0, py::arg("start_deg") = 0.0, py::arg("end_deg") = 360.0)
+        .def("measure_gap", &CaliperWrapper::measure_gap,
+             py::arg("image"), py::arg("cx"), py::arg("cy"), py::arg("phi_deg"),
+             py::arg("length1"), py::arg("half_gap"), py::arg("search"));
 
     m.def("find_line",
           [](const cv::Mat& img, double x0, double y0, double x1, double y1,
@@ -372,7 +442,9 @@ void bindTrad(py::module_& m)
         .def_readwrite("angle", &metrology::LineFit::angle)
         .def_readwrite("rms", &metrology::LineFit::rms)
         .def_readwrite("length", &metrology::LineFit::length)
-        .def_readwrite("numPoints", &metrology::LineFit::numPoints);
+        .def_readwrite("numPoints", &metrology::LineFit::numPoints)
+        .def_readwrite("numInliers", &metrology::LineFit::numInliers)
+        .def_readwrite("inliers", &metrology::LineFit::inliers);
 
     py::class_<metrology::SizeSummary>(m, "SizeSummary")
         .def(py::init<>())
@@ -407,7 +479,6 @@ void bindTrad(py::module_& m)
           },
           py::arg("ax0"), py::arg("ay0"), py::arg("ax1"), py::arg("ay1"),
           py::arg("bx0"), py::arg("by0"), py::arg("bx1"), py::arg("by1"));
-    m.def("fit_line", &metrology::fitLine, py::arg("points"));
     m.def("summarize_rectangle",
           [](double tlx, double tly, double trx, double try_, double brx, double bry, double blx, double bly) {
               return metrology::summarizeRectangle(cv::Point2d(tlx, tly), cv::Point2d(trx, try_),
