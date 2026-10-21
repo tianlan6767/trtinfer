@@ -233,20 +233,20 @@ void buildOri16(const cv::Mat& nx, const cv::Mat& ny, const cv::Mat& mag, float 
 }
 
 // 16 张响应图。R_b(x,y) 是 b 档与场景方向在 ±spread 里的最大余弦（极性由建图时选定）。
-// 扩散只做一次，位姿循环只查表。spread=3 盖住步长 4 的中心误差（≤2px），
-// 并给顶层加粗后的角度步长留大约 1px 切向。末层精修仍用浮点 scorePose。
+// 扩散只做一次，位姿循环只查表。spread=3 盖住步长 4 的中心误差（≤2px）。
+// 顶层角度仍用 atan(1/R)，不再加倍。末层精修仍用浮点 scorePose。
 // oriBins!=16 不建这些图。
 constexpr int kMapSpread = 3;
 constexpr int kMapStride = 4;
 
-// 粗搜进精修的名额。oriBins=16 至少留 96 个峰，避免 ±180° 的旁瓣挤掉贴边弱分；
-// maxCount 很大时收到大约 2 倍，不再按 4 倍把纹理假峰全送进金字塔。
+// 粗搜进精修的名额。不能比步长加倍之前更紧：maxCount=200 时旧名额是 800，
+// 收到 400 会在纹理图上把贴边弱分挤掉。oriBins=16 再垫一个下限。
 int coarseKeepCount(int maxCount, bool quant)
 {
 	const int loose = std::max(maxCount * 4, maxCount + 8);
 	if (!quant)
 		return loose;
-	return std::min(std::max(loose, 96), std::max(maxCount * 2, 96));
+	return std::max(loose, 128);
 }
 
 int refineKeepCount(int maxCount, bool quant)
@@ -254,7 +254,7 @@ int refineKeepCount(int maxCount, bool quant)
 	const int loose = std::max(maxCount * 3, maxCount + 6);
 	if (!quant)
 		return loose;
-	return std::min(std::max(loose, 64), std::max(maxCount * 2, 64));
+	return std::max(loose, 96);
 }
 struct OriResponse16
 {
@@ -712,6 +712,7 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCo
 		ShapeCandidate c;
 		double seedX = 0;
 		double seedY = 0;
+		double seedAng = 0;
 		double w = 1;
 		double angC = 0;
 		double angS = 0;
@@ -733,14 +734,23 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCo
 		if (match >= 0)
 		{
 			Acc& a = kept[match];
+			// 响应图把一片格点都抬到同一分上，最高的那一格经常在平台边上。
+			// 几乎同分的邻居一起算质心。角度只平均离种子约一步的，
+			// 避免把另一侧的高分角度卷进圆周平均。
 			if (blendTies && c.score >= a.c.score - 1e-4)
 			{
 				const double w = a.w;
 				a.c.cx = (a.c.cx * w + c.cx) / (w + 1.0);
 				a.c.cy = (a.c.cy * w + c.cy) / (w + 1.0);
-				a.angC += std::cos(c.angle * kD2R);
-				a.angS += std::sin(c.angle * kD2R);
-				a.c.angle = std::atan2(a.angS, a.angC) * kR2D;
+				double dAng = std::fabs(c.angle - a.seedAng);
+				if (dAng > 180.0)
+					dAng = 360.0 - dAng;
+				if (dAng <= 4.0)
+				{
+					a.angC += std::cos(c.angle * kD2R);
+					a.angS += std::sin(c.angle * kD2R);
+					a.c.angle = std::atan2(a.angS, a.angC) * kR2D;
+				}
 				a.w = w + 1.0;
 			}
 			continue;
@@ -751,6 +761,7 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCo
 		a.c = c;
 		a.seedX = c.cx;
 		a.seedY = c.cy;
+		a.seedAng = c.angle;
 		a.w = 1;
 		a.angC = std::cos(c.angle * kD2R);
 		a.angS = std::sin(c.angle * kD2R);
@@ -892,11 +903,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		const float scaledR = std::max(1.f, modelRadius(topModel.edges) * (float)scaleMax_);
 		angStep = std::max(0.25, std::atan(1.0 / scaledR) * kR2D);
 	}
-	// 搜索范围够宽时才把顶层步长加倍。半步误差大约是原来的 atan(1/R)，
-	// 下一层 ±3 个更小的步长盖得住。范围只有几度时不加倍，避免整段只剩 0°。
-	// oriBins=0 保持原来的步长。末层浮点分不看这个步长。
-	if (quantCoarse && matchParam_.angle > angStep * 4.0)
-		angStep *= 2.0;
+	// 顶层角度步长保持 atan(1/R)。±180° 再乘 2 时，弱残件离最近样本大约一整步，
+	// 粗分会掉到阈值下，下一层接不回来。oriBins=0 本来就是这个步长。
 	std::vector<double> angles;
 	if (matchParam_.angle < 1e-6)
 		angles.push_back(0.0);
@@ -1015,8 +1023,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		std::vector<ShapeCandidate> next;
 		const auto& mdl = layers_[layer];
 		double step = angleStepDeg(mdl.edges);
-		// 质心之后顶层误差大约 2px，翻到下一层是 4px。±5 接住，不再把窗口开到能锁上旁边的假峰。
-		const int rad0 = (quantCoarse && layer == top - 1) ? 5 : 4;
+		// 质心之后顶层误差大约 2px，翻到下一层是 4px。贴边残件的响应图峰值还会再偏出去，第一层用 ±10。
+		const int rad0 = (quantCoarse && layer == top - 1) ? 10 : 4;
 #pragma omp parallel
 		{
 			std::vector<ShapeCandidate> local;
@@ -1036,7 +1044,12 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				angs.push_back(0.0);
 			else
 			{
-				for (int k = -3; k <= 3; ++k)
+				// 响应图在只露出大约 2/3 的件上，粗分最高的角度可以偏到真角一侧约 10°。
+				// 第一层用浮点分把这个偏差找回来；更下面的层仍是 ±3 步。
+				const int kMax = (quantCoarse && layer == top - 1)
+									 ? std::max(3, (int)std::ceil(12.0 / std::max(step, 1e-3)))
+									 : 3;
+				for (int k = -kMax; k <= kMax; ++k)
 				{
 					double a = c0.angle + k * step;
 					if (a > matchParam_.angle)

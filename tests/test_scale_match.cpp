@@ -1497,7 +1497,7 @@ void testShapeOri16ResponseMapWideAngle()
 	}
 }
 
-// 步长 4、顶层角度步长 ×2 之后，±180° 仍要留下转过的件和贴左边的件。
+// 步长 4、±180° 之后仍要留下转过的件和贴左边的件。
 // 不是 233 原图。桌面机用 233 复测 n 和 find。
 void testShapeOri16Stride4KeepsWideHits()
 {
@@ -1608,6 +1608,98 @@ void testPatternBrightnessLikeExposure()
 	expect(std::fabs(r->LeftTop.x - x0) < 2.0 && std::fabs(r->LeftTop.y - y0) < 2.0, "pattern exposure origin");
 }
 
+// 左边缘大约只露出 2/3（中心 x=26.3，模板宽 144，和 233 上 T11 同一类几何）。
+// ±180°、oriBins=16、对比度 29/119。顶层角度步长如果再乘 2，15° 和 140° 这两件会从粗搜里消失。
+// 不是 233 原图。
+void testShapeOri16WideLeftEdgePartial()
+{
+	using namespace template_matching;
+	const int tw = 144, th = 190;
+	cv::Mat templ(th, tw, CV_8U, cv::Scalar(36));
+	cv::rectangle(templ, {12, 14}, {tw - 14, th - 16}, cv::Scalar(210), 5);
+	cv::rectangle(templ, {28, 30}, {tw / 2, th / 2}, cv::Scalar(210), cv::FILLED);
+	cv::circle(templ, {tw - 36, 48}, 16, cv::Scalar(210), cv::FILLED);
+	cv::circle(templ, {tw - 40, th - 40}, 10, cv::Scalar(36), cv::FILLED);
+	cv::line(templ, {24, th - 36}, {tw - 24, th - 36}, cv::Scalar(210), 4);
+	cv::Mat mask = cv::Mat::zeros(templ.size(), CV_8U);
+	cv::rectangle(mask, {6, 8}, {tw - 8, th - 10}, cv::Scalar(255), cv::FILLED);
+
+	auto paint = [&](cv::Mat& scene, cv::Point2d c, double angDeg) {
+		cv::Mat rot;
+		const cv::Point2f pivot((templ.cols - 1) * 0.5f, (templ.rows - 1) * 0.5f);
+		const cv::Mat M = cv::getRotationMatrix2D(pivot, angDeg, 1.0);
+		cv::warpAffine(templ, rot, M, templ.size(), cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(36));
+		const int x0 = (int)std::lround(c.x - (rot.cols - 1) / 2.0);
+		const int y0 = (int)std::lround(c.y - (rot.rows - 1) / 2.0);
+		for (int y = 0; y < rot.rows; ++y)
+		{
+			const int sy = y0 + y;
+			if (sy < 0 || sy >= scene.rows)
+				continue;
+			for (int x = 0; x < rot.cols; ++x)
+			{
+				const int sx = x0 + x;
+				if (sx < 0 || sx >= scene.cols)
+					continue;
+				const uchar v = rot.at<uchar>(y, x);
+				if (v != 36)
+					scene.at<uchar>(sy, sx) = v;
+			}
+		}
+	};
+
+	cv::Mat scene(700, 820, CV_8U, cv::Scalar(36));
+	const struct
+	{
+		cv::Point2d c;
+		double ang;
+	} inst[] = {
+		{{26.3, 160}, 15},
+		{{26.3, 380}, 140},
+		{{26.3, 590}, 40},
+		{{520, 220}, 25},
+	};
+	for (const auto& it : inst)
+		paint(scene, it.c, it.ang);
+
+	MatcherParam param;
+	param.matcherType = MatcherType::SHAPE;
+	param.angle = 180;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 200;
+	param.iouThreshold = 0.4;
+	param.minArea = 256;
+	param.edgeMinMag = 29;
+	param.edgeContrast = 119;
+	param.maxEdgePoints = 320;
+	param.usePolarity = true;
+	param.greediness = 0.9;
+	param.oriBins = 16;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(templ, mask) == 0, "shape ori16-left-edge setTemplate");
+	std::vector<MatchResult> hits;
+	const auto t0 = std::chrono::steady_clock::now();
+	matcher->match(scene, hits);
+	const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+	std::cout << "    shape ori16-left-edge ±180 find " << ms << " ms n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " ang=" << h.Angle << " c=(" << h.Center.x << "," << h.Center.y << ")"
+				  << std::endl;
+	expect((int)hits.size() == (int)(sizeof(inst) / sizeof(inst[0])), "shape ori16-left-edge keeps every part");
+	for (const auto& it : inst)
+	{
+		expect(countNear(hits, it.c, 12.0) == 1, "shape ori16-left-edge one hit per part");
+		const MatchResult* h = nearestHit(hits, it.c);
+		expect(h && h->Score >= 0.5, "shape ori16-left-edge score passes 0.5");
+		if (!h)
+			continue;
+		double dAng = std::fabs(h->Angle - it.ang);
+		if (dAng > 180.0)
+			dAng = 360.0 - dAng;
+		expect(dAng <= 8.0, "shape ori16-left-edge angle stays on the part");
+	}
+}
+
 }  // namespace
 
 int main()
@@ -1638,6 +1730,7 @@ int main()
 	testShapeOri16PartialMatchesFloat();
 	testShapeOri16ResponseMapWideAngle();
 	testShapeOri16Stride4KeepsWideHits();
+	testShapeOri16WideLeftEdgePartial();
 	testShapeFaintRingThird();
 	testPatternOneQuadrantOcclusion();
 	testBoardPoseUnchanged();
