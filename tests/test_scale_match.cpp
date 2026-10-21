@@ -1252,6 +1252,110 @@ void testShapeHighContrastStillFinds()
 	expect(r && std::hypot(r->Center.x - cx, r->Center.y - cy) < 6.0, "shape high-contrast center");
 }
 
+// 左边缘只露出大约七成的圆。中心在模型半径里面，旧的顶层 margin 根本搜不到。
+// 出界点要跳过再归一化，不能当成 0 把可见的那段乘到阈值下。画面中间的整圆也要在。
+void testShapeBorderPartial()
+{
+	using namespace template_matching;
+	const int box = 160;
+	const int rad = 50;
+	cv::Mat templ(box, box, CV_8U, cv::Scalar(32));
+	cv::circle(templ, {box / 2, box / 2}, rad, cv::Scalar(220), cv::FILLED);
+	cv::circle(templ, {box / 2, box / 2}, 14, cv::Scalar(32), cv::FILLED);
+	cv::Mat mask = cv::Mat::zeros(templ.size(), CV_8U);
+	cv::circle(mask, {box / 2, box / 2}, rad + 4, cv::Scalar(255), cv::FILLED);
+
+	const cv::Point2d edgeC(30, 220);
+	const cv::Point2d fullC(360, 220);
+	cv::Mat scene(460, 560, CV_8U, cv::Scalar(32));
+	cv::circle(scene, edgeC, rad, cv::Scalar(220), cv::FILLED);
+	cv::circle(scene, edgeC, 14, cv::Scalar(32), cv::FILLED);
+	cv::circle(scene, fullC, rad, cv::Scalar(220), cv::FILLED);
+	cv::circle(scene, fullC, 14, cv::Scalar(32), cv::FILLED);
+
+	for (int bins : {0, 16})
+	{
+		MatcherParam param;
+		param.matcherType = MatcherType::SHAPE;
+		param.angle = 8;
+		param.scoreThreshold = 0.5;
+		param.maxCount = 6;
+		param.iouThreshold = 0.4;
+		param.minArea = 256;
+		param.edgeMinMag = 20;
+		param.edgeContrast = 80;
+		param.maxEdgePoints = 240;
+		param.usePolarity = true;
+		param.greediness = 0.9;
+		param.oriBins = bins;
+		auto matcher = GetMatcher(param);
+		expect(matcher && matcher->setTemplate(templ, mask) == 0, "shape border setTemplate");
+		std::vector<MatchResult> hits;
+		matcher->match(scene, hits);
+		std::cout << "    shape border oriBins=" << bins << " n=" << hits.size() << std::endl;
+		for (const auto& h : hits)
+			std::cout << "      sc=" << h.Score << " c=(" << h.Center.x << "," << h.Center.y << ")" << std::endl;
+		expect(countNear(hits, edgeC, 14.0) == 1, "shape border finds the clipped part");
+		expect(countNear(hits, fullC, 12.0) == 1, "shape border keeps the interior part");
+		expect((int)hits.size() == 2, "shape border has no extra hit");
+		const MatchResult* edge = nearestHit(hits, edgeC);
+		expect(edge && edge->Score >= 0.5, "shape border clipped score passes 0.5");
+	}
+}
+
+// 第三只圆环对比度低、边缘发虚。方向贴得上，不能再被 mag/32 乘到 0.5 下面。
+void testShapeFaintRingThird()
+{
+	using namespace template_matching;
+	const int d = 96;
+	cv::Mat templ = ringPatch(d, 6, 40, 210);
+	cv::Mat scene(360, 640, CV_8U, cv::Scalar(40));
+	const cv::Point origins[] = {{24, 40}, {230, 36}, {430, 48}};
+	std::vector<cv::Point2d> truth;
+	for (int i = 0; i < 3; ++i)
+	{
+		cv::Mat tile = templ.clone();
+		if (i == 2)
+		{
+			tile.setTo(40);
+			cv::circle(tile, {d / 2, d / 2}, d / 2 - 4, cv::Scalar(58), 6);
+			cv::GaussianBlur(tile, tile, cv::Size(0, 0), 1.1);
+		}
+		paste(scene, tile, origins[i].x, origins[i].y);
+		truth.emplace_back(origins[i].x + d / 2.0, origins[i].y + d / 2.0);
+	}
+	// 缺一大段的弧，不能跟着第三只真圆环一起留下来。
+	cv::ellipse(scene, {120, 280}, {36, 36}, 0, 20, 190, cv::Scalar(200), 6);
+
+	MatcherParam param;
+	param.matcherType = MatcherType::SHAPE;
+	param.angle = 12;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 8;
+	param.iouThreshold = 0.5;
+	param.minArea = 256;
+	param.edgeMinMag = 12;
+	param.maxEdgePoints = 320;
+	param.usePolarity = true;
+	param.greediness = 0.85;
+	param.minScale = 0.9;
+	param.maxScale = 1.1;
+	param.scaleStep = 0.05;
+	param.oriBins = 0;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(templ) == 0, "shape faint-ring setTemplate");
+	std::vector<MatchResult> hits;
+	matcher->match(scene, hits);
+	std::cout << "    shape faint-ring n=" << hits.size() << std::endl;
+	for (const auto& h : hits)
+		std::cout << "      sc=" << h.Score << " c=(" << h.Center.x << "," << h.Center.y << ")" << std::endl;
+	expect((int)hits.size() == 3, "shape faint-ring finds the dim ring and drops the arc");
+	for (const auto& c : truth)
+		expect(countNear(hits, c, 10.0) == 1, "shape faint-ring one hit per ring");
+	const MatchResult* dim = nearestHit(hits, truth[2]);
+	expect(dim && dim->Score >= 0.5, "shape faint-ring dim score passes 0.5");
+}
+
 void testPatternBrightnessLikeExposure()
 {
 	using namespace template_matching;
@@ -1304,6 +1408,8 @@ int main()
 	testShapeMottleLockDropped();
 	testShapeTrayMaskAndChip();
 	testShapeHighContrastStillFinds();
+	testShapeBorderPartial();
+	testShapeFaintRingThird();
 	testPatternOneQuadrantOcclusion();
 	testBoardPoseUnchanged();
 	testRotatedAsymmetric();
