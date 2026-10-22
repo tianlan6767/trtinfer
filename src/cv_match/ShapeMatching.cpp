@@ -36,14 +36,17 @@ cv::Mat toGray(const cv::Mat& image)
 	return gray;
 }
 
-int getTopLayer(const cv::Mat& templ, double minArea)
+// minSide：进入下一层之前，当前层最短边不得小于这个值。默认 48，缩完后顶层大约还剩 24px。
+// 顶层过小则角度步长变大，近圆和 L 形容易锁错角。
+// maxTop>=0 时层数封顶（下标到 maxTop 为止）。ori16 用来补到下标 3，不再无限往下缩。
+int getTopLayer(int width, int height, double minArea, int minSide = 48, int maxTop = -1)
 {
 	int top = 0;
-	int w = templ.cols, h = templ.rows;
+	int w = width, h = height;
 	double area = (double)w * h;
 	const double minA = std::max(16.0, minArea);
-	// 顶层过小则角度步长大、近圆/L 形容易锁错角；最短边至少约 24 px
-	while (area > minA && std::min(w, h) >= 48)
+	const int side = std::max(8, minSide);
+	while (area > minA && std::min(w, h) >= side && (maxTop < 0 || top < maxTop))
 	{
 		area /= 4.0;
 		w /= 2;
@@ -156,9 +159,19 @@ bool poseHopeless(double sum, int used, int n, int index, double abortBelow)
 }
 
 // 响应图在贴边会把旁边的强边收成高分，这条带改回浮点 scorePose。
-// 233 探针：T11 顶层 (6.6, 39) 的最近格点 (6, 38) 已经落在带宽 16 里，浮点粗分大约 0.55–0.61。
-// 带宽不是漏检原因，不要为了这一件再加宽。
+// 旧顶层（下标 2，约 322×241）上，T11 的 (6.6, 39) 最近格点 (6, 38) 落在带宽 16 里，
+// 浮点粗分大约 0.55–0.61。带宽不是漏检原因，不要在同一层上再加宽。
+// 多出来的层按 2 的幂缩小，原图上仍大约 64px：下标 3 的带宽是 8。
+// 143×183 收到 4 层之后，左缘 T10/T11 还在带里，(318,180) 不会整幅变成贴边。
 constexpr int kCoarseBorderBand = 16;
+
+int coarseBorderBandFor(int top, int legacyTop)
+{
+	const int extra = std::max(0, top - legacyTop);
+	if (extra <= 0)
+		return kCoarseBorderBand;
+	return std::max(3, kCoarseBorderBand >> extra);
+}
 
 bool onCoarseBorder(int x, int y, int rows, int cols, int margin, int band)
 {
@@ -865,7 +878,7 @@ bool candidatePrecedes(const ShapeCandidate& a, const ShapeCandidate& b)
 }
 
 void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCount, bool blendTies = false,
-				   double blendRadius = 1e9)
+				   double blendRadius = 1e9, double minAngleSep = 180.0)
 {
 	std::sort(cands.begin(), cands.end(), candidatePrecedes);
 	// 响应图把分数铺平之后，同一实例上很多格点都是 1。只留排序第一个会停在平台边缘，
@@ -915,8 +928,16 @@ void nmsCandidates(std::vector<ShapeCandidate>& cands, double minDist, int maxCo
 				{
 					// 用种子位置，不用挪过的质心，避免两个挨着的实例被收成一个。
 					// 两点都小于半径时留更早的那个，和按名次线性扫一致。
-					if (std::hypot(c.cx - kept[id].seedX, c.cy - kept[id].seedY) < minDist &&
-						(match < 0 || id < match))
+					if (std::hypot(c.cx - kept[id].seedX, c.cy - kept[id].seedY) >= minDist)
+						continue;
+					// 更深的顶层上，差几十度的贴边高分会把真角度挤掉，下一层 ±3 步接不回来。
+					// 角度差过了这条线就各留各的。180 时和原来一样，所有角度都并到最高分上。
+					double dAng = std::fabs(c.angle - kept[id].seedAng);
+					if (dAng > 180.0)
+						dAng = 360.0 - dAng;
+					if (dAng > minAngleSep)
+						continue;
+					if (match < 0 || id < match)
 						match = id;
 				}
 			}
@@ -1341,7 +1362,13 @@ int ShapeMatcher::setTemplate(const cv::Mat& templateImage, const cv::Mat& mask)
 	templateImage_ = gray.clone();
 	templW_ = gray.cols;
 	templH_ = gray.rows;
-	const int top = getTopLayer(gray, matchParam_.minArea);
+	// 最短边 48 把 143×183 停在下标 2（大约 36×46）。ori16 再补一层到下标 3（大约 18×23）。
+	// 下标 4（大约 9×12）会把 16px 外的强边收进相邻粗像素，贴边中心会漂过去，所以不再往下。
+	// 已经深过下标 3 的大模板维持 48 那条。oriBins=0 不动。
+	const int legacyTop = getTopLayer(gray.cols, gray.rows, matchParam_.minArea, 48);
+	int top = legacyTop;
+	if (matchParam_.oriBins == 16)
+		top = std::max(legacyTop, getTopLayer(gray.cols, gray.rows, matchParam_.minArea, 16, 3));
 	std::vector<cv::Mat> pyr;
 	cv::buildPyramid(gray, pyr, top);
 	std::vector<cv::Mat> maskPyr;
@@ -1373,6 +1400,20 @@ int ShapeMatcher::setTemplate(const cv::Mat& templateImage, const cv::Mat& mask)
 		{
 			if (i == 0)
 				return -4;
+			layers_[i].edges = layers_[i - 1].edges;
+			for (auto& e : layers_[i].edges)
+			{
+				e.dx *= 0.5f;
+				e.dy *= 0.5f;
+			}
+		}
+	}
+	// 再往上的层自己提边只剩十几个点，粗分会在差几十度的角度上打满。
+	// 从还能分清角度的那一层把点逐层缩下去，法向不变。精修仍用各层自己的图。
+	if (matchParam_.oriBins == 16 && top > legacyTop && legacyTop >= 0 && legacyTop < (int)layers_.size())
+	{
+		for (int i = legacyTop + 1; i <= top && i < (int)layers_.size(); ++i)
+		{
 			layers_[i].edges = layers_[i - 1].edges;
 			for (auto& e : layers_[i].edges)
 			{
@@ -1413,10 +1454,25 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		computeUnitGrad(pyr[i], nx[i], ny[i], mag[i], &packed[i]);
 	const bool quantCoarse = matchParam_.oriBins == 16;
 	const bool polarity = matchParam_.usePolarity;
-	// ±kMapSpread 扩散进响应图，不放进位姿循环。步长 kMapStride 的中心误差不超过 spread。
+	// 下标 2 上扩散 3、步长 4，中心误差不超过 2px，下一层 ±4 接得住。
+	// 再深的层像素更大：按多出来的层数减半，原图上的覆盖大约不变。
+	// 顶层若仍扩散 3，邻域相对模板太大，角度会锁偏。
+	const int legacyTop = getTopLayer(templW_, templH_, matchParam_.minArea, 48);
+	const int pyrExtra = std::max(0, top - legacyTop);
+	int mapSpread = kMapSpread;
+	int mapStride = kMapStride;
+	for (int e = 0; e < pyrExtra; ++e)
+	{
+		if (mapSpread > 1)
+			mapSpread >>= 1;
+		// 步长收到 1。半步在原图上大约 8px，和贴边第一层能接住的范围一样。
+		// 停在 2 时，第一层为了不扫到 16px 外的强边，会够不着半步外的真中心。
+		if (mapStride > 1)
+			mapStride >>= 1;
+	}
 	OriResponse16 respTop;
 	if (quantCoarse)
-		buildOriResponse16(nx[top], ny[top], mag[top], 6.f, polarity, kMapSpread, respTop);
+		buildOriResponse16(nx[top], ny[top], mag[top], 6.f, polarity, mapSpread, respTop);
 
 	const ShapeLayer& topModel = layers_[top];
 	double angStep = angleStepDeg(topModel.edges);
@@ -1446,8 +1502,9 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	// 旧的「步长≤2」是在补逐点 ±2。响应图把邻域最大值铺开之后，步长 4 的格点误差 ≤2，
 	// 下一层搜索半径盖得住。oriBins=0 仍用上面的 1–4。
 	if (quantCoarse)
-		stride = kMapStride;
+		stride = mapStride;
 	const int margin = borderMargin(pyr[top].rows, pyr[top].cols, stride);
+	const int borderBand = coarseBorderBandFor(top, legacyTop);
 	const double coarseTh = matchParam_.scoreThreshold * 0.72;
 	const double greed = matchParam_.greediness;
 
@@ -1463,7 +1520,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			const auto model = rotateModel(topModel.edges, angles[ai]);
 			// 内部每隔一个角度查响应图。角度误差最多大约一步，第一层 ±12° 接得回来。
 			// 贴边每个角度都用浮点分，T11 的 ±3 步窗口接不住被拉大的角度步长。
-			const bool interiorAngle = (ai & 1) == 0;
+			// 顶层模型很小时一步会超过大约 12°。再隔一个角度，第一层 ±12° 接不回来。
+			const bool interiorAngle = angStep > 12.0 || (ai & 1) == 0;
 			const std::vector<MapPoint> mapPts =
 				(quantCoarse && interiorAngle) ? makeMapPoints(model) : std::vector<MapPoint>();
 			for (int y = margin; y < pyr[top].rows - margin; y += stride)
@@ -1473,7 +1531,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 					// 贴边用浮点分。响应图在裁掉的轮廓旁边会把任意强边收成高分，
 					// 弱残件排不进前几百个峰，下一层也就看不到。
 					const bool border = quantCoarse &&
-						onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, margin, kCoarseBorderBand);
+						onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, margin, borderBand);
 					if (quantCoarse && !border && !interiorAngle)
 						continue;
 					const double sc = (quantCoarse && !border)
@@ -1503,7 +1561,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		if (scaleStride > 4)
 			scaleStride = 4;
 		if (quantCoarse)
-			scaleStride = kMapStride;
+			scaleStride = mapStride;
 		std::vector<std::pair<int, int>> jobs;
 		jobs.reserve(angles.size() * scales_.size());
 		for (int ai = 0; ai < (int)angles.size(); ++ai)
@@ -1517,7 +1575,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			const int ai = jobs[ji].first;
 			const double objScale = scales_[jobs[ji].second];
 			const auto model = scaleEdges(rotateModel(topModel.edges, angles[ai]), objScale);
-			const bool interiorAngle = (ai & 1) == 0;
+			const bool interiorAngle = angStep > 12.0 || (ai & 1) == 0;
 			const std::vector<MapPoint> mapPts =
 				(quantCoarse && interiorAngle) ? makeMapPoints(model) : std::vector<MapPoint>();
 			const int mgn = borderMargin(pyr[top].rows, pyr[top].cols, scaleStride);
@@ -1526,7 +1584,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				for (int x = mgn; x < pyr[top].cols - mgn; x += scaleStride)
 				{
 					const bool border = quantCoarse &&
-						onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, mgn, kCoarseBorderBand);
+						onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, mgn, borderBand);
 					if (quantCoarse && !border && !interiorAngle)
 						continue;
 					const double sc = (quantCoarse && !border)
@@ -1630,7 +1688,9 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				rings.resize(kMaxInteriorRescue);
 			interior.insert(interior.end(), rings.begin(), rings.end());
 		}
-		nmsCandidates(border, minDistTop, keep, false);
+		// 只在比 48 那条更深的顶层上把贴边按角度拆开。下标 2 仍是原来的整幅去重。
+		const double borderAngSep = pyrExtra > 0 ? 20.0 : 180.0;
+		nmsCandidates(border, minDistTop, keep, false, 1e9, borderAngSep);
 		coarse.clear();
 		coarse.reserve(interior.size() + border.size());
 		coarse.insert(coarse.end(), interior.begin(), interior.end());
@@ -1860,7 +1920,11 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			// 贴边不进这圈。环带种子 narrowRefine 也不会把位置扩到 ±10。
 			if (pass == 1 && bestS < matchParam_.scoreThreshold * 0.6)
 				break;
-			const int rad = (pass == 1) ? 10 : 4;
+			int rad = (pass == 1) ? 10 : 4;
+			// 贴边窗口在原图上大约 ±8px。下标 2 的下一层（第 1 层）就是 ±4，和第 0 层的 ±4 一样够不着 16px。
+			// 更深的层如果仍用 ±4 个该层像素，只在细层才明显的强边会被扫进来，中心往右漂大约 16px。
+			if (pass == 0 && c0.fromBorder && quantCoarse && layer > 1)
+				rad = std::min(rad, std::max(1, 8 >> layer));
 			const int posStep = interiorFirst ? 2 : 1;
 			if (!scaleSearch_)
 			{
