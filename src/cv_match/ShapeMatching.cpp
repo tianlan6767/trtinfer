@@ -116,9 +116,6 @@ void computeUnitGrad(const cv::Mat& gray, cv::Mat& nx, cv::Mat& ny, cv::Mat& mag
 // 233 上 T11 的可见比例大约 0.62–0.66，末层分大约 0.53，刚好贴着这条线的上侧。
 // 往上提会改用全部点数做分母，0.53 会掉到 0.5 下面。不要往上调。
 constexpr double kMinInFrameFrac = 0.62;
-// 原图精修前，上一层分数低于这条线的种子铺 ±4 也到不了 0.5。
-// 过线的种子在测试里都高于 0.62；纹理假峰停在 0.56 以下。
-constexpr double kFullResSeedFloor = 0.60;
 
 bool inFrame32(const cv::Mat& m, float x, float y)
 {
@@ -1000,6 +997,9 @@ constexpr double kInteriorRescueMin = 8.0;
 constexpr double kInteriorBlendRadius = 4.0;
 constexpr int kRingSectors = 8;
 constexpr int kMaxInteriorRescue = 24;
+// 贴边和环带不占这份额。其余内部种子只把粗分最高的这些个送进精修。
+// 再低会在纹理图上把孤立的真峰排到名额外面。64 对合成图里分数大约 0.59 的内部件仍留有余量。
+constexpr int kInteriorRefineCap = 64;
 
 struct RingPick
 {
@@ -1703,6 +1703,36 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		nmsCandidates(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, false), false);
 
 	std::vector<ShapeCandidate> refined = coarse;
+	// 贴边一律精修。T11 上一层可以低于 0.60，要靠原图窗口才过 0.5，按分数丢掉就会少一件。
+	// 环带捞回的也留。其余内部种子只留粗分最高的 64 个，假峰不再把每一层窗口铺满。
+	// 双开种子在层循环里才复制，不占这 64 个名额。尺度搜索和 oriBins=0 不走这里。
+	if (quantCoarse && !scaleSearch_)
+	{
+		std::vector<ShapeCandidate> border, interior, rings;
+		border.reserve(refined.size());
+		interior.reserve(refined.size());
+		rings.reserve(kMaxInteriorRescue);
+		for (const auto& c : refined)
+		{
+			if (c.fromBorder)
+				border.push_back(c);
+			else if (c.narrowRefine)
+				rings.push_back(c);
+			else
+				interior.push_back(c);
+		}
+		if ((int)interior.size() > kInteriorRefineCap)
+		{
+			std::nth_element(interior.begin(), interior.begin() + kInteriorRefineCap, interior.end(),
+							 candidatePrecedes);
+			interior.resize(kInteriorRefineCap);
+			refined.clear();
+			refined.reserve(interior.size() + rings.size() + border.size());
+			refined.insert(refined.end(), interior.begin(), interior.end());
+			refined.insert(refined.end(), rings.begin(), rings.end());
+			refined.insert(refined.end(), border.begin(), border.end());
+		}
+	}
 	for (int layer = top - 1; layer >= stopLayer; --layer)
 	{
 		std::vector<ShapeCandidate> next;
@@ -1966,17 +1996,8 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			};
 			// 末层中心的完整分低于 0.18 时，±4 窗口到不了 0.5。弱贴边残件的中心仍高于这条线。
 			// 只用于 ori16、阈值 0.5。更低的阈值，或全程浮点，中心偏低的种子仍可能在邻格过线。
-			// 上一层已经低于 0.60 的，原图窗口同样到不了 0.5，连中心那一次也不打。
-			// 弱贴边在上一层仍高于这条线。停在更粗的层、或做尺度搜索时不走这条。
 			bool poorCenter = false;
-			if (layer == 0 && stopLayer == 0 && quantCoarse && !scaleSearch_ &&
-				matchParam_.scoreThreshold >= 0.5 && c0.score < kFullResSeedFloor)
-			{
-				poorCenter = true;
-				bestS = -1;
-				best.score = -1;
-			}
-			else if (layer == stopLayer && quantCoarse && matchParam_.scoreThreshold >= 0.5)
+			if (layer == stopLayer && quantCoarse && matchParam_.scoreThreshold >= 0.5)
 			{
 				const auto probeRot = rotateModel(mdl.edges, c0.angle);
 				const auto probeModel = scaleSearch_ ? scaleEdges(probeRot, c0.scale) : probeRot;
