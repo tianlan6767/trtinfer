@@ -2029,9 +2029,9 @@ void testShapeOri16BorderRefineDoesNotDrift()
 	expect(countNear(floatHits, partial, 10.0) == 1, "shape ori0-drift finds left edge");
 }
 
-// 10px 缺角在第一层只比 180° 高出大约 0.025，±2、步长 1、门槛 0.04 留在 -180°。
-// 下一层分差大约 0.06，同一门槛要把它带回大约 0°。7.6° 那件不能被翻到对面。
-// 完全对称的矩形转 180° 框不变，不在这里要求它回到 0°。
+// 10px 缺角在偏掉的中心上，错的那一瓣仍然更高，只改角度翻不回来。
+// 第一层 |角度|≥90° 的内部种子会再留一份 +180°，精修之后应回到大约 0°。
+// 7.6° 那件不在这档，不能被翻到对面。完全对称的矩形转 180° 框不变，不在这里要求它回到 0°。
 void testShapeOri16NotchDoesNotFlip()
 {
 	using namespace template_matching;
