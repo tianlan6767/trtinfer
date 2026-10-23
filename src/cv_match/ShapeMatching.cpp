@@ -1705,6 +1705,58 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		std::vector<ShapeCandidate> next;
 		const auto& mdl = layers_[layer];
 		double step = angleStepDeg(mdl.edges);
+		// 下标 3 的粗图把近矩形的 0° 和 180° 打成差不多的分。内部去重只留更高的那一瓣，
+		// 后面大约 ±12° 走不回另一瓣。第一层仍是下标 2 的分辨率，缺口还在。
+		// 贴边不去翻：那边已经按 20° 留住两个角度，再翻会把 16px 外的强边收成合格命中。
+		// 先比种子中心。两瓣差过 0.15 就定论；否则再在 ±2 个该层像素（原图大约 ±8px）里比。
+		// 分差不到 0.04 留粗搜的角度，完全对称的矩形不会被数值噪声翻面。
+		if (quantCoarse && pyrExtra > 0 && layer == top - 1 && !scaleSearch_ && matchParam_.angle >= 90.0)
+		{
+#pragma omp parallel for schedule(dynamic, 4)
+			for (int ci = 0; ci < (int)refined.size(); ++ci)
+			{
+				if (refined[ci].fromBorder)
+					continue;
+				double opp = std::remainder(refined[ci].angle + 180.0, 360.0);
+				if (opp > matchParam_.angle + 1e-3 || opp < -matchParam_.angle - 1e-3)
+					continue;
+				const double cx = refined[ci].cx * 2.0;
+				const double cy = refined[ci].cy * 2.0;
+				if (cx < 0 || cy < 0 || cx > pyr[layer].cols - 1 || cy > pyr[layer].rows - 1)
+					continue;
+				const auto modelA = rotateModel(mdl.edges, refined[ci].angle);
+				const auto modelB = rotateModel(mdl.edges, opp);
+				const auto scoreAt = [&](const std::vector<ShapeEdgePt>& model, double x, double y) {
+					return scorePose(model, nx[layer], ny[layer], mag[layer], (float)matchParam_.edgeMinMag, x, y,
+									 polarity, greed, abortMinScore(-1.0, -1.0, greed), false, 1, &packed[layer]);
+				};
+				double bestA = scoreAt(modelA, cx, cy);
+				double bestB = scoreAt(modelB, cx, cy);
+				if (std::fabs(bestA - bestB) <= 0.15)
+				{
+					for (int oy = -2; oy <= 2; oy += 2)
+					{
+						for (int ox = -2; ox <= 2; ox += 2)
+						{
+							if (ox == 0 && oy == 0)
+								continue;
+							const double x = cx + ox;
+							const double y = cy + oy;
+							if (x < 0 || y < 0 || x > pyr[layer].cols - 1 || y > pyr[layer].rows - 1)
+								continue;
+							const double sa = scoreAt(modelA, x, y);
+							const double sb = scoreAt(modelB, x, y);
+							if (sa > bestA)
+								bestA = sa;
+							if (sb > bestB)
+								bestB = sb;
+						}
+					}
+				}
+				if (bestB > bestA + 0.04)
+					refined[ci].angle = opp;
+			}
+		}
 		// 贴边第一层必须是 ±4 px、±3 步。233 上 ±10 px 会把 T11 拖离 (25, 159)。
 		// 内部响应图种子第一层仍是 ±10 px、大约 ±12°，和 8e6638d 一样。
 		std::vector<ShapeCandidate> slots(refined.size());

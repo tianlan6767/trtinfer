@@ -2029,6 +2029,85 @@ void testShapeOri16BorderRefineDoesNotDrift()
 	expect(countNear(floatHits, partial, 10.0) == 1, "shape ori0-drift finds left edge");
 }
 
+// 14px 缺角在下标 3 上几乎看不见，粗搜会锁在 180°（分数大约 0.90）。
+// 第一层还分得清，应回到大约 0°、分数大约 0.99。10px 的缺角在这一层分差仍不到 0.04，不在这里卡。
+// 完全对称的矩形转 180° 框不变，不在这里要求它回到 0°。
+void testShapeOri16NotchDoesNotFlip()
+{
+	using namespace template_matching;
+	const int tw = 143, th = 183;
+	cv::Mat templ(th, tw, CV_8U, cv::Scalar(40));
+	cv::rectangle(templ, {16, 14}, {tw - 18, th - 16}, cv::Scalar(190), cv::FILLED);
+	cv::rectangle(templ, {16, 14}, {30, 28}, cv::Scalar(40), cv::FILLED);
+	cv::Mat mask = cv::Mat::zeros(templ.size(), CV_8U);
+	cv::rectangle(mask, {6, 6}, {tw - 8, th - 8}, cv::Scalar(255), cv::FILLED);
+
+	cv::Mat scene(964, 1288, CV_8U, cv::Scalar(40));
+	for (int y = 1; y < scene.rows; y += 3)
+	{
+		uchar* row = scene.ptr<uchar>(y);
+		for (int x = 0; x < scene.cols; ++x)
+			row[x] = (uchar)(40 + ((x * 5 + y * 3) % 50));
+	}
+	const cv::Point2d truth(364, 490);
+	const double ang = 0.37;
+	cv::Mat rot;
+	const cv::Point2f pivot((templ.cols - 1) * 0.5f, (templ.rows - 1) * 0.5f);
+	cv::warpAffine(templ, rot, cv::getRotationMatrix2D(pivot, ang, 1.0), templ.size(), cv::INTER_LINEAR,
+				   cv::BORDER_CONSTANT, cv::Scalar(40));
+	const int x0 = (int)std::lround(truth.x - (rot.cols - 1) / 2.0);
+	const int y0 = (int)std::lround(truth.y - (rot.rows - 1) / 2.0);
+	for (int y = 0; y < rot.rows; ++y)
+	{
+		for (int x = 0; x < rot.cols; ++x)
+		{
+			const int sx = x0 + x, sy = y0 + y;
+			if (sx < 0 || sy < 0 || sx >= scene.cols || sy >= scene.rows)
+				continue;
+			const uchar v = rot.at<uchar>(y, x);
+			if (v != 40)
+				scene.at<uchar>(sy, sx) = v;
+		}
+	}
+
+	MatcherParam param;
+	param.matcherType = MatcherType::SHAPE;
+	param.angle = 180;
+	param.scoreThreshold = 0.5;
+	param.maxCount = 3000;
+	param.iouThreshold = 0.1;
+	param.minArea = 64;
+	param.edgeMinMag = 29;
+	param.edgeContrast = 119;
+	param.maxEdgePoints = 320;
+	param.usePolarity = true;
+	param.greediness = 0.9;
+	param.oriBins = 16;
+	auto matcher = GetMatcher(param);
+	expect(matcher && matcher->setTemplate(templ, mask) == 0, "shape ori16-notch setTemplate");
+	std::vector<MatchResult> hits;
+	const auto t0 = std::chrono::steady_clock::now();
+	matcher->match(scene, hits);
+	const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+	const MatchResult* h = nearestHit(hits, truth);
+	double d = 1e9;
+	double dAng = 180;
+	if (h)
+	{
+		d = std::hypot(h->Center.x - truth.x, h->Center.y - truth.y);
+		dAng = std::fabs(h->Angle - ang);
+		if (dAng > 180.0)
+			dAng = 360.0 - dAng;
+	}
+	std::cout << "    shape ori16-notch ±180 find " << ms << " ms n=" << hits.size();
+	if (h)
+		std::cout << " sc=" << h->Score << " ang=" << h->Angle << " d=" << d << " dang=" << dAng;
+	std::cout << std::endl;
+	expect(h && d <= 8.0, "shape ori16-notch stays on the painted center");
+	expect(h && h->Score >= 0.5, "shape ori16-notch score passes 0.5");
+	expect(h && dAng <= 15.0, "shape ori16-notch does not flip 180");
+}
+
 }  // namespace
 
 int main()
@@ -2063,6 +2142,7 @@ int main()
 	testShapeOri16T11SizedLeftEdge();
 	testShapeOri16TexturedLeftEdge();
 	testShapeOri16BorderRefineDoesNotDrift();
+	testShapeOri16NotchDoesNotFlip();
 	testShapeFaintRingThird();
 	testPatternOneQuadrantOcclusion();
 	testBoardPoseUnchanged();
