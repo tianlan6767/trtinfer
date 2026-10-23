@@ -1706,13 +1706,16 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		const auto& mdl = layers_[layer];
 		double step = angleStepDeg(mdl.edges);
 		// 下标 3 的内部去重只留一个角度，±12° 走不回对面那一瓣。
-		// 弱缺口在第一层只高出大约 0.025，0.04 的门槛留不住；(670,845) 和 (318,180) 就是这种。
-		// 原图以上的每一层精修前都比一次，原图上覆盖大约 ±8px。末层不再铺：点多，而且上一层已经分开。
-		// 当前瓣在中心已经不低于 0.75、并且比对面高出 0.08，就不再铺这圈。
-		// 贴边不翻，否则 16px 外的强边会被收成合格命中。对称矩形分差到不了 0.02，外框不变。
-		if (quantCoarse && pyrExtra > 0 && layer > 0 && !scaleSearch_ && matchParam_.angle >= 90.0)
+		// 第一层精修前：±2 个该层像素、步长 1，每次都铺开。对瓣高出 0.04 才改角度，中心不动。
+		// 桌面上这把 (318,180) 从 180° 带回 1.27°，n 仍是 11。门槛改成 0.02 会丢掉 (1023,859)。
+		// (670,845) 在这一层对瓣赢不到 0.04。位置精修之后再到下一层，同样 0.04，邻域放大到原图大约 ±8px，步长 2。
+		// 贴边两层都不翻。
+		const bool lobeFirst = layer == top - 1;
+		const bool lobeNext = layer == top - 2 && layer > 0;
+		if (quantCoarse && pyrExtra > 0 && !scaleSearch_ && matchParam_.angle >= 90.0 && (lobeFirst || lobeNext))
 		{
-			const int rad = std::max(2, 8 >> layer);
+			const int rad = lobeFirst ? 2 : 4;
+			const int step = lobeFirst ? 1 : 2;
 #pragma omp parallel for schedule(dynamic, 4)
 			for (int ci = 0; ci < (int)refined.size(); ++ci)
 			{
@@ -1731,30 +1734,25 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 					return scorePose(model, nx[layer], ny[layer], mag[layer], (float)matchParam_.edgeMinMag, x, y,
 									 polarity, greed, abortMinScore(-1.0, -1.0, greed), false, 1, &packed[layer]);
 				};
-				double bestA = scoreAt(modelA, cx, cy);
-				double bestB = scoreAt(modelB, cx, cy);
-				if (!(bestA >= 0.75 && bestA > bestB + 0.08))
+				double bestA = -1.0;
+				double bestB = -1.0;
+				for (int oy = -rad; oy <= rad; oy += step)
 				{
-					for (int oy = -rad; oy <= rad; oy += 2)
+					for (int ox = -rad; ox <= rad; ox += step)
 					{
-						for (int ox = -rad; ox <= rad; ox += 2)
-						{
-							if (ox == 0 && oy == 0)
-								continue;
-							const double x = cx + ox;
-							const double y = cy + oy;
-							if (x < 0 || y < 0 || x > pyr[layer].cols - 1 || y > pyr[layer].rows - 1)
-								continue;
-							const double sa = scoreAt(modelA, x, y);
-							const double sb = scoreAt(modelB, x, y);
-							if (sa > bestA)
-								bestA = sa;
-							if (sb > bestB)
-								bestB = sb;
-						}
+						const double x = cx + ox;
+						const double y = cy + oy;
+						if (x < 0 || y < 0 || x > pyr[layer].cols - 1 || y > pyr[layer].rows - 1)
+							continue;
+						const double sa = scoreAt(modelA, x, y);
+						const double sb = scoreAt(modelB, x, y);
+						if (sa > bestA)
+							bestA = sa;
+						if (sb > bestB)
+							bestB = sb;
 					}
 				}
-				if (bestB > bestA + 0.02)
+				if (bestB > bestA + 0.04)
 					refined[ci].angle = opp;
 			}
 		}
