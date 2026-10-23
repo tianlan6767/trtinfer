@@ -2029,8 +2029,8 @@ void testShapeOri16BorderRefineDoesNotDrift()
 	expect(countNear(floatHits, partial, 10.0) == 1, "shape ori0-drift finds left edge");
 }
 
-// 14px 缺角在下标 3 上几乎看不见，粗搜会锁在 180°（分数大约 0.90）。
-// 第一层还分得清，应回到大约 0°、分数大约 0.99。10px 的缺角在这一层分差仍不到 0.04，不在这里卡。
+// 10px 缺角在第一层只比 180° 高出大约 0.025，0.04 的门槛会留在 -180°、分数大约 0.92。
+// 下一层分差大约 0.06，末层大约 0.22。两件都要回到画出的角度。
 // 完全对称的矩形转 180° 框不变，不在这里要求它回到 0°。
 void testShapeOri16NotchDoesNotFlip()
 {
@@ -2038,7 +2038,7 @@ void testShapeOri16NotchDoesNotFlip()
 	const int tw = 143, th = 183;
 	cv::Mat templ(th, tw, CV_8U, cv::Scalar(40));
 	cv::rectangle(templ, {16, 14}, {tw - 18, th - 16}, cv::Scalar(190), cv::FILLED);
-	cv::rectangle(templ, {16, 14}, {30, 28}, cv::Scalar(40), cv::FILLED);
+	cv::rectangle(templ, {16, 14}, {26, 24}, cv::Scalar(40), cv::FILLED);
 	cv::Mat mask = cv::Mat::zeros(templ.size(), CV_8U);
 	cv::rectangle(mask, {6, 6}, {tw - 8, th - 8}, cv::Scalar(255), cv::FILLED);
 
@@ -2051,6 +2051,8 @@ void testShapeOri16NotchDoesNotFlip()
 	}
 	const cv::Point2d truth(364, 490);
 	const double ang = 0.37;
+	const cv::Point2d truthB(670.3, 845.3);
+	const double angB = 7.64;
 	cv::Mat rot;
 	const cv::Point2f pivot((templ.cols - 1) * 0.5f, (templ.rows - 1) * 0.5f);
 	cv::warpAffine(templ, rot, cv::getRotationMatrix2D(pivot, ang, 1.0), templ.size(), cv::INTER_LINEAR,
@@ -2065,6 +2067,23 @@ void testShapeOri16NotchDoesNotFlip()
 			if (sx < 0 || sy < 0 || sx >= scene.cols || sy >= scene.rows)
 				continue;
 			const uchar v = rot.at<uchar>(y, x);
+			if (v != 40)
+				scene.at<uchar>(sy, sx) = v;
+		}
+	}
+	cv::Mat rotB;
+	cv::warpAffine(templ, rotB, cv::getRotationMatrix2D(pivot, angB, 1.0), templ.size(), cv::INTER_LINEAR,
+				   cv::BORDER_CONSTANT, cv::Scalar(40));
+	const int x0b = (int)std::lround(truthB.x - (rotB.cols - 1) / 2.0);
+	const int y0b = (int)std::lround(truthB.y - (rotB.rows - 1) / 2.0);
+	for (int y = 0; y < rotB.rows; ++y)
+	{
+		for (int x = 0; x < rotB.cols; ++x)
+		{
+			const int sx = x0b + x, sy = y0b + y;
+			if (sx < 0 || sy < 0 || sx >= scene.cols || sy >= scene.rows)
+				continue;
+			const uchar v = rotB.at<uchar>(y, x);
 			if (v != 40)
 				scene.at<uchar>(sy, sx) = v;
 		}
@@ -2106,6 +2125,21 @@ void testShapeOri16NotchDoesNotFlip()
 	expect(h && d <= 8.0, "shape ori16-notch stays on the painted center");
 	expect(h && h->Score >= 0.5, "shape ori16-notch score passes 0.5");
 	expect(h && dAng <= 15.0, "shape ori16-notch does not flip 180");
+	const MatchResult* b = nearestHit(hits, truthB);
+	double dB = 1e9;
+	double dAngB = 180;
+	if (b)
+	{
+		dB = std::hypot(b->Center.x - truthB.x, b->Center.y - truthB.y);
+		dAngB = std::fabs(b->Angle - angB);
+		if (dAngB > 180.0)
+			dAngB = 360.0 - dAngB;
+		std::cout << "    shape ori16-notch B sc=" << b->Score << " ang=" << b->Angle << " d=" << dB
+				  << " dang=" << dAngB << std::endl;
+	}
+	expect(b && dB <= 8.0, "shape ori16-notch B stays on the painted center");
+	expect(b && b->Score >= 0.5, "shape ori16-notch B score passes 0.5");
+	expect(b && dAngB <= 15.0, "shape ori16-notch B does not flip 180");
 }
 
 }  // namespace

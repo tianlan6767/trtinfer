@@ -1705,13 +1705,14 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		std::vector<ShapeCandidate> next;
 		const auto& mdl = layers_[layer];
 		double step = angleStepDeg(mdl.edges);
-		// 下标 3 的粗图把近矩形的 0° 和 180° 打成差不多的分。内部去重只留更高的那一瓣，
-		// 后面大约 ±12° 走不回另一瓣。第一层仍是下标 2 的分辨率，缺口还在。
-		// 贴边不去翻：那边已经按 20° 留住两个角度，再翻会把 16px 外的强边收成合格命中。
-		// 先比种子中心。两瓣差过 0.15 就定论；否则再在 ±2 个该层像素（原图大约 ±8px）里比。
-		// 分差不到 0.04 留粗搜的角度，完全对称的矩形不会被数值噪声翻面。
-		if (quantCoarse && pyrExtra > 0 && layer == top - 1 && !scaleSearch_ && matchParam_.angle >= 90.0)
+		// 下标 3 的内部去重只留一个角度，±12° 走不回对面那一瓣。
+		// 弱缺口在第一层只高出大约 0.025，0.04 的门槛留不住；(670,845) 和 (318,180) 就是这种。
+		// 原图以上的每一层精修前都比一次，原图上覆盖大约 ±8px。末层不再铺：点多，而且上一层已经分开。
+		// 当前瓣在中心已经不低于 0.75、并且比对面高出 0.08，就不再铺这圈。
+		// 贴边不翻，否则 16px 外的强边会被收成合格命中。对称矩形分差到不了 0.02，外框不变。
+		if (quantCoarse && pyrExtra > 0 && layer > 0 && !scaleSearch_ && matchParam_.angle >= 90.0)
 		{
+			const int rad = std::max(2, 8 >> layer);
 #pragma omp parallel for schedule(dynamic, 4)
 			for (int ci = 0; ci < (int)refined.size(); ++ci)
 			{
@@ -1732,11 +1733,11 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 				};
 				double bestA = scoreAt(modelA, cx, cy);
 				double bestB = scoreAt(modelB, cx, cy);
-				if (std::fabs(bestA - bestB) <= 0.15)
+				if (!(bestA >= 0.75 && bestA > bestB + 0.08))
 				{
-					for (int oy = -2; oy <= 2; oy += 2)
+					for (int oy = -rad; oy <= rad; oy += 2)
 					{
-						for (int ox = -2; ox <= 2; ox += 2)
+						for (int ox = -rad; ox <= rad; ox += 2)
 						{
 							if (ox == 0 && oy == 0)
 								continue;
@@ -1753,7 +1754,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 						}
 					}
 				}
-				if (bestB > bestA + 0.04)
+				if (bestB > bestA + 0.02)
 					refined[ci].angle = opp;
 			}
 		}
