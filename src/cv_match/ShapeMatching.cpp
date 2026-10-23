@@ -116,6 +116,9 @@ void computeUnitGrad(const cv::Mat& gray, cv::Mat& nx, cv::Mat& ny, cv::Mat& mag
 // 233 上 T11 的可见比例大约 0.62–0.66，末层分大约 0.53，刚好贴着这条线的上侧。
 // 往上提会改用全部点数做分母，0.53 会掉到 0.5 下面。不要往上调。
 constexpr double kMinInFrameFrac = 0.62;
+// 原图精修前，上一层分数低于这条线的种子铺 ±4 也到不了 0.5。
+// 过线的种子在测试里都高于 0.62；纹理假峰停在 0.56 以下。
+constexpr double kFullResSeedFloor = 0.60;
 
 bool inFrame32(const cv::Mat& m, float x, float y)
 {
@@ -1963,8 +1966,17 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			};
 			// 末层中心的完整分低于 0.18 时，±4 窗口到不了 0.5。弱贴边残件的中心仍高于这条线。
 			// 只用于 ori16、阈值 0.5。更低的阈值，或全程浮点，中心偏低的种子仍可能在邻格过线。
+			// 上一层已经低于 0.60 的，原图窗口同样到不了 0.5，连中心那一次也不打。
+			// 弱贴边在上一层仍高于这条线。停在更粗的层、或做尺度搜索时不走这条。
 			bool poorCenter = false;
-			if (layer == stopLayer && quantCoarse && matchParam_.scoreThreshold >= 0.5)
+			if (layer == 0 && stopLayer == 0 && quantCoarse && !scaleSearch_ &&
+				matchParam_.scoreThreshold >= 0.5 && c0.score < kFullResSeedFloor)
+			{
+				poorCenter = true;
+				bestS = -1;
+				best.score = -1;
+			}
+			else if (layer == stopLayer && quantCoarse && matchParam_.scoreThreshold >= 0.5)
 			{
 				const auto probeRot = rotateModel(mdl.edges, c0.angle);
 				const auto probeModel = scaleSearch_ ? scaleEdges(probeRot, c0.scale) : probeRot;
