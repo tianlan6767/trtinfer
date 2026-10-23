@@ -72,9 +72,46 @@ double angleStepDeg(const std::vector<ShapeEdgePt>& edges)
 
 // packedXY 不为空时，顺手把单位法向收成一对。打分时每个模型点只碰一块内存。
 // 幅值仍单独放着：最细一层的象限权重要用它，不能改计算顺序。
-void computeUnitGrad(const cv::Mat& gray, cv::Mat& nx, cv::Mat& ny, cv::Mat& mag, cv::Mat* packedXY = nullptr)
+// 每个像素独立，行间并行不改 std::hypot 的结果。原图大约 1288×964 时这一步原来是串行的十多毫秒，
+// 粗搜和精修已经并行，核更多时它在整段 find 里的占比更高。模板和顶层小图继续单线程。
+struct UnitGradTmp
 {
 	cv::Mat gx, gy;
+};
+thread_local UnitGradTmp unitGradTmp;
+
+void fillUnitGradRow(int y, const cv::Mat& gx, const cv::Mat& gy, cv::Mat& nx, cv::Mat& ny, cv::Mat& mag,
+					 cv::Mat* packedXY)
+{
+	const float* px = gx.ptr<float>(y);
+	const float* py = gy.ptr<float>(y);
+	float* pnx = nx.ptr<float>(y);
+	float* pny = ny.ptr<float>(y);
+	float* pm = mag.ptr<float>(y);
+	cv::Vec2f* pack = packedXY ? packedXY->ptr<cv::Vec2f>(y) : nullptr;
+	for (int x = 0; x < gx.cols; ++x)
+	{
+		const float m = std::hypot(px[x], py[x]);
+		pm[x] = m;
+		if (m > 1e-3f)
+		{
+			pnx[x] = px[x] / m;
+			pny[x] = py[x] / m;
+		}
+		else
+		{
+			pnx[x] = 0.f;
+			pny[x] = 0.f;
+		}
+		if (pack)
+			pack[x] = cv::Vec2f(pnx[x], pny[x]);
+	}
+}
+
+void computeUnitGrad(const cv::Mat& gray, cv::Mat& nx, cv::Mat& ny, cv::Mat& mag, cv::Mat* packedXY = nullptr)
+{
+	cv::Mat& gx = unitGradTmp.gx;
+	cv::Mat& gy = unitGradTmp.gy;
 	cv::Sobel(gray, gx, CV_32F, 1, 0, 3);
 	cv::Sobel(gray, gy, CV_32F, 0, 1, 3);
 	mag.create(gray.size(), CV_32F);
@@ -82,31 +119,17 @@ void computeUnitGrad(const cv::Mat& gray, cv::Mat& nx, cv::Mat& ny, cv::Mat& mag
 	ny.create(gray.size(), CV_32F);
 	if (packedXY)
 		packedXY->create(gray.size(), CV_32FC2);
-	for (int y = 0; y < gray.rows; ++y)
+	// 大约 40 万像素以上才摊得开线程。322×241 这一层并行会更慢。
+	if (gray.rows >= 400 && gray.cols >= 400)
 	{
-		const float* px = gx.ptr<float>(y);
-		const float* py = gy.ptr<float>(y);
-		float* pnx = nx.ptr<float>(y);
-		float* pny = ny.ptr<float>(y);
-		float* pm = mag.ptr<float>(y);
-		cv::Vec2f* pack = packedXY ? packedXY->ptr<cv::Vec2f>(y) : nullptr;
-		for (int x = 0; x < gray.cols; ++x)
-		{
-			const float m = std::hypot(px[x], py[x]);
-			pm[x] = m;
-			if (m > 1e-3f)
-			{
-				pnx[x] = px[x] / m;
-				pny[x] = py[x] / m;
-			}
-			else
-			{
-				pnx[x] = 0.f;
-				pny[x] = 0.f;
-			}
-			if (pack)
-				pack[x] = cv::Vec2f(pnx[x], pny[x]);
-		}
+#pragma omp parallel for schedule(static)
+		for (int y = 0; y < gray.rows; ++y)
+			fillUnitGradRow(y, gx, gy, nx, ny, mag, packedXY);
+	}
+	else
+	{
+		for (int y = 0; y < gray.rows; ++y)
+			fillUnitGradRow(y, gx, gy, nx, ny, mag, packedXY);
 	}
 }
 
@@ -997,6 +1020,9 @@ constexpr double kInteriorRescueMin = 8.0;
 constexpr double kInteriorBlendRadius = 4.0;
 constexpr int kRingSectors = 8;
 constexpr int kMaxInteriorRescue = 24;
+// 贴边和环带不占这份额。其余内部种子只把粗分最高的这些个送进精修。
+// 再低会在纹理图上把孤立的真峰排到名额外面。64 对合成图里分数大约 0.59 的内部件仍留有余量。
+constexpr int kInteriorRefineCap = 64;
 
 struct RingPick
 {
@@ -1447,9 +1473,23 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	if (stopLayer > top)
 		stopLayer = top;
 
-	std::vector<cv::Mat> pyr;
+	// 同一线程上反复 find 时复用金字塔和梯度的存储。每次新建四张原图浮点图都会重新缺页，
+	// 和 hypot 本身差不多。尺寸变了，create / pyrDown 会自己换缓冲。
+	struct MatchImgScratch
+	{
+		std::vector<cv::Mat> pyr, nx, ny, mag, packed;
+	};
+	thread_local MatchImgScratch imgScratch;
+	std::vector<cv::Mat>& pyr = imgScratch.pyr;
 	cv::buildPyramid(gray, pyr, top);
-	std::vector<cv::Mat> nx(pyr.size()), ny(pyr.size()), mag(pyr.size()), packed(pyr.size());
+	imgScratch.nx.resize(pyr.size());
+	imgScratch.ny.resize(pyr.size());
+	imgScratch.mag.resize(pyr.size());
+	imgScratch.packed.resize(pyr.size());
+	std::vector<cv::Mat>& nx = imgScratch.nx;
+	std::vector<cv::Mat>& ny = imgScratch.ny;
+	std::vector<cv::Mat>& mag = imgScratch.mag;
+	std::vector<cv::Mat>& packed = imgScratch.packed;
 	for (int i = 0; i < (int)pyr.size(); ++i)
 		computeUnitGrad(pyr[i], nx[i], ny[i], mag[i], &packed[i]);
 	const bool quantCoarse = matchParam_.oriBins == 16;
@@ -1700,6 +1740,36 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		nmsCandidates(coarse, minDistTop, coarseKeepCount(matchParam_.maxCount, false), false);
 
 	std::vector<ShapeCandidate> refined = coarse;
+	// 贴边一律精修。T11 上一层可以低于 0.60，要靠原图窗口才过 0.5，按分数丢掉就会少一件。
+	// 环带捞回的也留。其余内部种子只留粗分最高的 64 个，假峰不再把每一层窗口铺满。
+	// 双开种子在层循环里才复制，不占这 64 个名额。尺度搜索和 oriBins=0 不走这里。
+	if (quantCoarse && !scaleSearch_)
+	{
+		std::vector<ShapeCandidate> border, interior, rings;
+		border.reserve(refined.size());
+		interior.reserve(refined.size());
+		rings.reserve(kMaxInteriorRescue);
+		for (const auto& c : refined)
+		{
+			if (c.fromBorder)
+				border.push_back(c);
+			else if (c.narrowRefine)
+				rings.push_back(c);
+			else
+				interior.push_back(c);
+		}
+		if ((int)interior.size() > kInteriorRefineCap)
+		{
+			std::nth_element(interior.begin(), interior.begin() + kInteriorRefineCap, interior.end(),
+							 candidatePrecedes);
+			interior.resize(kInteriorRefineCap);
+			refined.clear();
+			refined.reserve(interior.size() + rings.size() + border.size());
+			refined.insert(refined.end(), interior.begin(), interior.end());
+			refined.insert(refined.end(), rings.begin(), rings.end());
+			refined.insert(refined.end(), border.begin(), border.end());
+		}
+	}
 	for (int layer = top - 1; layer >= stopLayer; --layer)
 	{
 		std::vector<ShapeCandidate> next;
