@@ -1705,6 +1705,77 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		std::vector<ShapeCandidate> next;
 		const auto& mdl = layers_[layer];
 		double step = angleStepDeg(mdl.edges);
+		// 下标 3 的内部去重只留一个角度，±12° 走不回对面那一瓣。
+		// 原图以上的每一层精修前都比 θ 和 θ+180，原图上大约 ±8px。对瓣高出 0.02 才改角度，中心不动。
+		// 当前瓣在中心已经不低于 0.75、并且比对面高出 0.08，就不再铺这圈。贴边不翻。
+		// (670,845) 的中心已经偏了：±8px 里错的那一瓣仍然更高，只改角度翻不回来。
+		// 第一层上 |角度|≥90° 的内部种子再留一份 +180°，后面的精修和去重留更高的那一瓣。
+		if (quantCoarse && pyrExtra > 0 && layer > 0 && !scaleSearch_ && matchParam_.angle >= 90.0)
+		{
+			const int rad = std::max(2, 8 >> layer);
+#pragma omp parallel for schedule(dynamic, 4)
+			for (int ci = 0; ci < (int)refined.size(); ++ci)
+			{
+				if (refined[ci].fromBorder)
+					continue;
+				double opp = std::remainder(refined[ci].angle + 180.0, 360.0);
+				if (opp > matchParam_.angle + 1e-3 || opp < -matchParam_.angle - 1e-3)
+					continue;
+				const double cx = refined[ci].cx * 2.0;
+				const double cy = refined[ci].cy * 2.0;
+				if (cx < 0 || cy < 0 || cx > pyr[layer].cols - 1 || cy > pyr[layer].rows - 1)
+					continue;
+				const auto modelA = rotateModel(mdl.edges, refined[ci].angle);
+				const auto modelB = rotateModel(mdl.edges, opp);
+				const auto scoreAt = [&](const std::vector<ShapeEdgePt>& model, double x, double y) {
+					return scorePose(model, nx[layer], ny[layer], mag[layer], (float)matchParam_.edgeMinMag, x, y,
+									 polarity, greed, abortMinScore(-1.0, -1.0, greed), false, 1, &packed[layer]);
+				};
+				double bestA = scoreAt(modelA, cx, cy);
+				double bestB = scoreAt(modelB, cx, cy);
+				if (!(bestA >= 0.75 && bestA > bestB + 0.08))
+				{
+					for (int oy = -rad; oy <= rad; oy += 2)
+					{
+						for (int ox = -rad; ox <= rad; ox += 2)
+						{
+							if (ox == 0 && oy == 0)
+								continue;
+							const double x = cx + ox;
+							const double y = cy + oy;
+							if (x < 0 || y < 0 || x > pyr[layer].cols - 1 || y > pyr[layer].rows - 1)
+								continue;
+							const double sa = scoreAt(modelA, x, y);
+							const double sb = scoreAt(modelB, x, y);
+							if (sa > bestA)
+								bestA = sa;
+							if (sb > bestB)
+								bestB = sb;
+						}
+					}
+				}
+				if (bestB > bestA + 0.02)
+					refined[ci].angle = opp;
+			}
+		}
+		if (quantCoarse && pyrExtra > 0 && layer == top - 1 && !scaleSearch_ && matchParam_.angle >= 90.0)
+		{
+			const size_t n0 = refined.size();
+			refined.reserve(n0 * 2);
+			for (size_t i = 0; i < n0; ++i)
+			{
+				if (refined[i].fromBorder)
+					continue;
+				const double a = std::fabs(std::remainder(refined[i].angle, 360.0));
+				if (a < 90.0)
+					continue;
+				ShapeCandidate o = refined[i];
+				o.angle = std::remainder(refined[i].angle + 180.0, 360.0);
+				if (o.angle > matchParam_.angle + 1e-3 || o.angle < -matchParam_.angle - 1e-3)
+					continue;
+				refined.push_back(o);
+			}
+		}
 		// 贴边第一层必须是 ±4 px、±3 步。233 上 ±10 px 会把 T11 拖离 (25, 159)。
 		// 内部响应图种子第一层仍是 ±10 px、大约 ±12°，和 8e6638d 一样。
 		std::vector<ShapeCandidate> slots(refined.size());
