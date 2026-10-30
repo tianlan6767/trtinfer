@@ -692,7 +692,8 @@ std::vector<ShapeEdgePt> rotateModel(const std::vector<ShapeEdgePt>& src, double
 }
 
 // 不成对时，nx 和 ny 隔着整幅图。这里每个点只读一行里相邻的两个浮点，计算顺序与分开的两张图相同。
-// 不加权幅值：权是 1，乘上去还是原来的点积。提前停的条件和返回的偏低分也不变。
+// 不加权幅值：权是 1，乘上去还是原来的点积。
+// 无望判断与 scorePoseMap 一样隔 4 个点查一次：只会多算几个注定失败的点，不会把还能过线的位姿提前杀掉。
 double scorePosePacked(const ShapeEdgePt* pts, int n, const cv::Mat& packed, double cx, double cy,
 					   bool polarity, double abortBelow)
 {
@@ -707,38 +708,68 @@ double scorePosePacked(const ShapeEdgePt* pts, int n, const cv::Mat& packed, dou
 	const size_t stride = packed.step / sizeof(float);
 	double sum = 0.0;
 	int used = 0;
-	for (int i = 0; i < n; ++i)
+	if (polarity)
 	{
-		const float px = (float)(cx + pts[i].dx);
-		const float py = (float)(cy + pts[i].dy);
-		if (px < 0.f || py < 0.f || px > xMax || py > yMax)
-			continue;
-		const int x0 = (int)px;
-		const int y0 = (int)py;
-		const int x1 = x0 + 1 < w ? x0 + 1 : x0;
-		const int y1 = y0 + 1 < h ? y0 + 1 : y0;
-		const float dx = px - (float)x0;
-		const float dy = py - (float)y0;
-		const float w00 = (1.f - dx) * (1.f - dy);
-		const float w10 = dx * (1.f - dy);
-		const float w01 = (1.f - dx) * dy;
-		const float w11 = dx * dy;
-		const float* r0 = base + (size_t)y0 * stride;
-		const float* r1 = base + (size_t)y1 * stride;
-		const int i0 = x0 * 2;
-		const int i1 = x1 * 2;
-		const float inx = w00 * r0[i0] + w10 * r0[i1] + w01 * r1[i0] + w11 * r1[i1];
-		const float iny = w00 * r0[i0 + 1] + w10 * r0[i1 + 1] + w01 * r1[i0 + 1] + w11 * r1[i1 + 1];
-		// 点积在 float 里加完再送进 double，和分开的 nx、ny 那条路径同一套舍入。
-		double raw = (double)(pts[i].nx * inx + pts[i].ny * iny);
-		if (!polarity)
-			raw = std::fabs(raw);
-		else if (raw < 0.0)
-			raw = 0.0;
-		sum += raw;
-		++used;
-		if (poseHopeless(sum, used, n, i, abortBelow))
-			return sum / n;
+		for (int i = 0; i < n; ++i)
+		{
+			const float px = (float)(cx + pts[i].dx);
+			const float py = (float)(cy + pts[i].dy);
+			if (px < 0.f || py < 0.f || px > xMax || py > yMax)
+				continue;
+			const int x0 = (int)px;
+			const int y0 = (int)py;
+			const int x1 = x0 + 1 < w ? x0 + 1 : x0;
+			const int y1 = y0 + 1 < h ? y0 + 1 : y0;
+			const float dx = px - (float)x0;
+			const float dy = py - (float)y0;
+			const float w00 = (1.f - dx) * (1.f - dy);
+			const float w10 = dx * (1.f - dy);
+			const float w01 = (1.f - dx) * dy;
+			const float w11 = dx * dy;
+			const float* r0 = base + (size_t)y0 * stride;
+			const float* r1 = base + (size_t)y1 * stride;
+			const int i0 = x0 * 2;
+			const int i1 = x1 * 2;
+			const float inx = w00 * r0[i0] + w10 * r0[i1] + w01 * r1[i0] + w11 * r1[i1];
+			const float iny = w00 * r0[i0 + 1] + w10 * r0[i1 + 1] + w01 * r1[i0 + 1] + w11 * r1[i1 + 1];
+			float raw = pts[i].nx * inx + pts[i].ny * iny;
+			if (raw < 0.f)
+				raw = 0.f;
+			sum += (double)raw;
+			++used;
+			if ((i & 3) == 3 && poseHopeless(sum, used, n, i, abortBelow))
+				return sum / n;
+		}
+	}
+	else
+	{
+		for (int i = 0; i < n; ++i)
+		{
+			const float px = (float)(cx + pts[i].dx);
+			const float py = (float)(cy + pts[i].dy);
+			if (px < 0.f || py < 0.f || px > xMax || py > yMax)
+				continue;
+			const int x0 = (int)px;
+			const int y0 = (int)py;
+			const int x1 = x0 + 1 < w ? x0 + 1 : x0;
+			const int y1 = y0 + 1 < h ? y0 + 1 : y0;
+			const float dx = px - (float)x0;
+			const float dy = py - (float)y0;
+			const float w00 = (1.f - dx) * (1.f - dy);
+			const float w10 = dx * (1.f - dy);
+			const float w01 = (1.f - dx) * dy;
+			const float w11 = dx * dy;
+			const float* r0 = base + (size_t)y0 * stride;
+			const float* r1 = base + (size_t)y1 * stride;
+			const int i0 = x0 * 2;
+			const int i1 = x1 * 2;
+			const float inx = w00 * r0[i0] + w10 * r0[i1] + w01 * r1[i0] + w11 * r1[i1];
+			const float iny = w00 * r0[i0 + 1] + w10 * r0[i1 + 1] + w01 * r1[i0 + 1] + w11 * r1[i1 + 1];
+			sum += (double)std::fabs(pts[i].nx * inx + pts[i].ny * iny);
+			++used;
+			if ((i & 3) == 3 && poseHopeless(sum, used, n, i, abortBelow))
+				return sum / n;
+		}
 	}
 	return meanInFrame(sum, used, n);
 }
