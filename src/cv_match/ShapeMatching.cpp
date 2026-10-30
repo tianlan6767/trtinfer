@@ -1107,6 +1107,7 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 	// 同一像素上只有角度不同，距离是 0，去重也只会留最高的那个。
 	// 先收成每个像素一个再排序，避免纹理图上几十万条候选把排序拖到几十毫秒。
 	// 尺度不是 1 时不收，避免把同一中心的另一个尺度删掉。
+	// 占用表只扫出现过的像素；非负坐标用 (int)(x+0.5) 代替 lround（与 scorePoseMap 一致）。
 	{
 		bool unitScale = true;
 		int maxX = 1;
@@ -1115,34 +1116,39 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 		{
 			if (std::fabs(c.scale - 1.0) > 1e-6)
 				unitScale = false;
-			maxX = std::max(maxX, (int)std::lround(c.cx) + 1);
-			maxY = std::max(maxY, (int)std::lround(c.cy) + 1);
+			maxX = std::max(maxX, (int)(c.cx + 0.5) + 1);
+			maxY = std::max(maxY, (int)(c.cy + 0.5) + 1);
 		}
 		if (unitScale && maxX > 1 && maxY > 1 && (long long)maxX * maxY <= 2000000ll)
 		{
 			std::vector<int> bestPix((size_t)maxX * (size_t)maxY, -1);
+			std::vector<int> occupied;
+			occupied.reserve(std::min(cands.size(), (size_t)maxX * (size_t)maxY));
 			std::vector<ShapeCandidate> extra;
 			for (int i = 0; i < (int)cands.size(); ++i)
 			{
-				const int x = (int)std::lround(cands[i].cx);
-				const int y = (int)std::lround(cands[i].cy);
+				const int x = (int)(cands[i].cx + 0.5);
+				const int y = (int)(cands[i].cy + 0.5);
 				if (x < 0 || y < 0 || x >= maxX || y >= maxY)
 				{
 					extra.push_back(cands[i]);
 					continue;
 				}
-				int& slot = bestPix[(size_t)y * (size_t)maxX + (size_t)x];
-				if (slot < 0 || candidatePrecedes(cands[i], cands[slot]))
+				const size_t flat = (size_t)y * (size_t)maxX + (size_t)x;
+				int& slot = bestPix[flat];
+				if (slot < 0)
+				{
+					occupied.push_back((int)flat);
+					slot = i;
+				}
+				else if (candidatePrecedes(cands[i], cands[slot]))
 					slot = i;
 			}
 			std::vector<ShapeCandidate> uniq;
-			uniq.reserve(extra.size() + 1024);
+			uniq.reserve(extra.size() + occupied.size());
 			uniq.insert(uniq.end(), extra.begin(), extra.end());
-			for (int slot : bestPix)
-			{
-				if (slot >= 0)
-					uniq.push_back(cands[slot]);
-			}
+			for (int flat : occupied)
+				uniq.push_back(cands[bestPix[(size_t)flat]]);
 			cands.swap(uniq);
 		}
 	}
@@ -1160,6 +1166,10 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 	std::vector<Acc> kept;
 	kept.reserve(std::min((int)cands.size(), std::max(maxCount, 1)));
 	const double cell = std::max(minDist, 1e-6);
+	const double minDist2 = minDist * minDist;
+	const double blend2 = kInteriorBlendRadius * kInteriorBlendRadius;
+	const double rescueMin2 = kInteriorRescueMin * kInteriorRescueMin;
+	const double band12_2 = 12.0 * 12.0;
 	struct CellKey
 	{
 		int x;
@@ -1174,8 +1184,12 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 		}
 	};
 	std::unordered_map<CellKey, std::vector<int>, CellHash> grid;
+	double lowestKept = 1e300;
 	for (const auto& c : cands)
 	{
+		// 已按分数降序。名额满后，再低的分数既当不了新种子，也贴不进任一已留种子的 1e-4 同分带。
+		if ((int)kept.size() >= maxCount && c.score < lowestKept - 1e-4)
+			break;
 		int match = -1;
 		const int ix = (int)std::floor(c.cx / cell);
 		const int iy = (int)std::floor(c.cy / cell);
@@ -1188,8 +1202,9 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 					continue;
 				for (int id : it->second)
 				{
-					if (std::hypot(c.cx - kept[id].seedX, c.cy - kept[id].seedY) < minDist &&
-						(match < 0 || id < match))
+					const double dx = c.cx - kept[id].seedX;
+					const double dy = c.cy - kept[id].seedY;
+					if (dx * dx + dy * dy < minDist2 && (match < 0 || id < match))
 						match = id;
 				}
 			}
@@ -1197,8 +1212,10 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 		if (match >= 0)
 		{
 			Acc& a = kept[match];
-			const double tieDist = std::hypot(c.cx - a.seedX, c.cy - a.seedY);
-			if (c.score >= a.c.score - 1e-4 && tieDist <= kInteriorBlendRadius)
+			const double dx = c.cx - a.seedX;
+			const double dy = c.cy - a.seedY;
+			const double tieDist2 = dx * dx + dy * dy;
+			if (c.score >= a.c.score - 1e-4 && tieDist2 <= blend2)
 			{
 				const double w = a.w;
 				a.c.cx = (a.c.cx * w + c.cx) / (w + 1.0);
@@ -1228,6 +1245,8 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 		a.angS = std::sin(c.angle * kD2R);
 		grid[CellKey{ix, iy}].push_back((int)kept.size());
 		kept.push_back(a);
+		if (c.score < lowestKept)
+			lowestKept = c.score;
 	}
 
 	// 每个像素只留排序后的第一名。cands 已按 candidatePrecedes 排过，先出现的就是该像素最高分。
@@ -1252,7 +1271,7 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 	{
 		if (cands[i].score < 0.42)
 			break;
-		const PixKey pk{(int)std::lround(cands[i].cx), (int)std::lround(cands[i].cy)};
+		const PixKey pk{(int)(cands[i].cx + 0.5), (int)(cands[i].cy + 0.5)};
 		if (!bestAt.count(pk))
 			bestAt.emplace(pk, i);
 	}
@@ -1260,7 +1279,7 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 	{
 		int bestIdx = -1;
 		int farIdx = -1;
-		double farDist = 0;
+		double farDist2 = 0;
 	};
 	const int bins = kRingSectors * 2;
 	std::vector<Slot> slots((size_t)kept.size() * (size_t)bins);
@@ -1269,7 +1288,7 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 		const int idx = kv.second;
 		const ShapeCandidate& c = cands[idx];
 		int match = -1;
-		double matchDist = 0;
+		double matchDist2 = 0;
 		const int ix = (int)std::floor(c.cx / cell);
 		const int iy = (int)std::floor(c.cy / cell);
 		for (int oy = -1; oy <= 1; ++oy)
@@ -1281,11 +1300,13 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 					continue;
 				for (int id : it->second)
 				{
-					const double dist = std::hypot(c.cx - kept[id].seedX, c.cy - kept[id].seedY);
-					if (dist >= kInteriorRescueMin && dist < minDist && (match < 0 || id < match))
+					const double dx = c.cx - kept[id].seedX;
+					const double dy = c.cy - kept[id].seedY;
+					const double dist2 = dx * dx + dy * dy;
+					if (dist2 >= rescueMin2 && dist2 < minDist2 && (match < 0 || id < match))
 					{
 						match = id;
-						matchDist = dist;
+						matchDist2 = dist2;
 					}
 				}
 			}
@@ -1298,15 +1319,15 @@ void nmsInteriorRescue(std::vector<ShapeCandidate>& cands, double minDist, int m
 			sector = 0;
 		if (sector >= kRingSectors)
 			sector = kRingSectors - 1;
-		const int band = matchDist < 12.0 ? 0 : 1;
+		const int band = matchDist2 < band12_2 ? 0 : 1;
 		Slot& s = slots[(size_t)match * (size_t)bins + (size_t)(band * kRingSectors + sector)];
 		if (s.bestIdx < 0 || candidatePrecedes(c, cands[s.bestIdx]))
 			s.bestIdx = idx;
-		if (s.farIdx < 0 || matchDist > s.farDist + 1e-9 ||
-			(std::fabs(matchDist - s.farDist) <= 1e-9 && candidatePrecedes(c, cands[s.farIdx])))
+		if (s.farIdx < 0 || matchDist2 > s.farDist2 + 1e-9 ||
+			(std::fabs(matchDist2 - s.farDist2) <= 1e-9 && candidatePrecedes(c, cands[s.farIdx])))
 		{
 			s.farIdx = idx;
-			s.farDist = matchDist;
+			s.farDist2 = matchDist2;
 		}
 	}
 	picks.clear();
