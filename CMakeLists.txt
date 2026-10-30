@@ -84,6 +84,22 @@ list(FILTER HEADER_SRCS EXCLUDE REGEX ".*/3rdParty/.*")
 
 add_executable(cvter ${CPP_SRCS} ${CU_SRCS}  ${HEADER_SRCS})
 
+
+# -------------------- cvter.__version__ (git describe at configure) --------------------
+set(CVTER_VERSION_STR "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} describe --always --dirty --tags
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE CVTER_VERSION_STR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+endif()
+message(STATUS "cvter __version__: ${CVTER_VERSION_STR}")
+target_compile_definitions(cvter PRIVATE "CVTER_VERSION=\"${CVTER_VERSION_STR}\"")
+
 source_group(TREE ${SRC_DIR} FILES
     ${CPP_SRCS}
     ${CU_SRCS}

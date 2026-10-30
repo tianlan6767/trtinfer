@@ -15,6 +15,10 @@
 
 namespace py = pybind11;
 
+#ifndef CVTER_VERSION
+#define CVTER_VERSION "unknown"
+#endif
+
 class MatcherWrapper {
 public:
     std::unique_ptr<template_matching::Matcher> matcher;
@@ -137,6 +141,8 @@ public:
 
 void bindTrad(py::module_& m)
 {
+    m.attr("__version__") = CVTER_VERSION;
+
     py::class_<cv::Point2d>(m, "Point2d")
     .def(py::init<>())
     .def(py::init<double, double>(), py::arg("x"), py::arg("y"))
