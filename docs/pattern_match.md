@@ -65,8 +65,10 @@ for r in m.match(gray):
 | `maxScale` | 1 | 尺度上界。与 `minScale` 都为 1 时只搜原尺寸 |
 | `scaleStep` | 0.05 | `minScale != maxScale` 且 `numScales<=1` 时的步长；`<=0` 仍按 0.05 |
 | `numScales` | 0 | `>1` 时在 `[minScale, maxScale]` 上均匀取这么多个（含端点），忽略 `scaleStep` |
+| `borderOverhangFrac` | 0.22 | 只对 `SHAPE`：贴边精修竖直出界比例，见 [shape_match.md](shape_match.md) |
+| `borderRefineRadMin` | 0 | 只对 `SHAPE`：贴边深层精修窗下限；`0`=自动 |
 
-`edgeMinMag` / `maxEdgePoints` / `usePolarity` / `greediness` 只对 `SHAPE` 有效。
+`edgeMinMag` / `edgeContrast` / `maxEdgePoints` / `usePolarity` / `greediness` / `oriBins` / `borderOverhangFrac` / `borderRefineRadMin` 只对 `SHAPE` 有效。
 
 ## 尺度
 

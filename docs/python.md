@@ -289,6 +289,8 @@ param.maxEdgePoints = 320
 param.usePolarity = True
 param.greediness = 0.9
 param.oriBins = 0             # 16：顶层 16 档方向响应图粗搜，末层仍是浮点
+param.borderOverhangFrac = 0.22   # 贴边竖直出界；<=0 关闭
+param.borderRefineRadMin = 0      # 0=自动深层精修窗下限
 param.minScale = 1.0
 param.maxScale = 1.0
 param.scaleStep = 0.05
@@ -449,12 +451,13 @@ loc = cvter.match_coarse_to_fine(scene, model, param=param)
 ## 19. 条码、QR、OCR
 
 ```python
+print(cvter.barcode_available(), cvter.ocr_available())
 for h in cvter.decode_qr(bgr):
     print(h.text, h.polygon)
 for h in cvter.decode_barcode(bgr):
     print(h.format, h.text)
 text = cvter.recognize_text(gray, "eng")
-print(text.backend, text.text)   # 没编 Tesseract 时 backend == "none"
+print(text.backend, text.text)   # ocr_available() 为 False 时 backend == "none"
 ```
 
 QR 用 OpenCV `QRCodeDetector`，不加载模型。一维码优先 OpenCV，解不出时用 zbar。不用微信 QR。见 [code.md](code.md)。

@@ -21,8 +21,9 @@ for h in hits:
 ## OCR
 
 ```python
+print(cvter.ocr_available())   # False 时下面 backend 为 none
 r = cvter.recognize_text(image, lang="eng")
 print(r.backend, r.found, r.text)
 ```
 
-编进 Tesseract（`pkg-config tesseract` 成功，编译加 `-DCVTER_WITH_TESSERACT`）且能加载 `eng` 时，`backend` 为 `tesseract`，页面模式是单行。否则 `backend` 为 `none`，`found` 为 false，不报错。
+编进 Tesseract（`pkg-config tesseract` 成功，编译加 `-DCVTER_WITH_TESSERACT`）且能加载 `eng` 时，`ocr_available()` 为 true，`backend` 为 `tesseract`，页面模式是单行。否则 `ocr_available()` 为 false，`backend` 为 `none`，`found` 为 false，不报错。

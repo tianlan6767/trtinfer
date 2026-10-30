@@ -10,13 +10,22 @@
 
 完整模块 `make -j` 得到 `workspace/cvter.so`，深度学习路径需要 CUDA 与 TensorRT。传统算法可以单独编：`make test-viz` 生成 `objs/pytrad/cvter.so`，不链 CUDA / TensorRT。
 
+Windows（本机 `build-win2022`）对应两份 Python 扩展，都叫 `cvter`，能力不同：
+
+| 产物 | 路径（示例） | 内容 |
+|---|---|---|
+| **pytrt** | `build-win2022/pytrt/cvter.pyd` | 完整：`TrtInfer`（TensorRT）+ 传统视觉（匹配 / 卡尺 / Blob / 标定等） |
+| **pytrad** | `build-win2022/pytrad/cvter.pyd` | 仅传统算法；**无** CUDA / TensorRT，**无** `TrtInfer` |
+
+下面「已实现」里的深度学习项以 **pytrt** 为准；传统项两份都有。能力探测函数（`sift_available` 等）在两份里都导出，返回值取决于本机构建时链了哪些后端。
+
 ## 已实现
 
 | 能力 | 范围 | 文档 |
 |---|---|---|
 | 深度学习 TensorRT | YOLO 检测 / 姿态 / 实例分割 / OBB / SAHI、DFINE / DFINESAHI、分类、UVIAD、DeepLabV3+。Python `ModelType` 已导出上述类型。走完整 `cvter`，需要 CUDA / TensorRT | [yolo.md](yolo.md)、[dfine.md](dfine.md)、[classify.md](classify.md)、[uviad.md](uviad.md)、[deeplabv3.md](deeplabv3.md)、[python.md](python.md) |
 | 灰度模板匹配 | `MatcherType.PATTERN`（NCC），可选 `setTemplate(templ, mask)`。尺度搜索：`minScale` / `maxScale` / `scaleStep` / `numScales` | [pattern_match.md](pattern_match.md) |
-| 形状匹配 | `MatcherType.SHAPE`，mask 内才提边缘。尺度参数与 PATTERN 同一组 | [shape_match.md](shape_match.md) |
+| 形状匹配 | `MatcherType.SHAPE`，mask 内才提边缘。尺度参数与 PATTERN 同一组。贴边精修另有 `MatcherParam.borderOverhangFrac`（默认 0.22）/ `borderRefineRadMin`（默认 0=自动） | [shape_match.md](shape_match.md) |
 | 预处理与 Blob | 阈值、形态学、连通域 / 轮廓 | [blob.md](blob.md) |
 | 卡尺与量测 | 直线、圆、找矩形，多边 / 双边 / 弧段 / 开口，以及距离 / 角度辅助 | [caliper.md](caliper.md)、[measure.md](measure.md) |
 | 尺寸测量 | 点线圆几何，最小二乘 / RANSAC 拟合与形位公差，包围尺寸与量规，像素到物理单位和夹具坐标 | [measure.md](measure.md) |
@@ -44,15 +53,26 @@
 
 ## 依赖可选
 
-这些能力已经实现。缺下面的库或样图时，可视化用例会跳过，库本身仍可编译。
+这些能力已经实现。缺下面的库或样图时，可视化用例会跳过，库本身仍可编译。接口始终导出；后端未链上时探测为 false，调用多半空结果或失败（不崩）。
 
 | 能力 | 什么时候会跳过 |
 |---|---|
 | ChArUco / ArUco 网格 / ChArUco 菱形 / AprilTag | OpenCV 未编 aruco。`aruco_available()` 为 false，检测 `refine` 为 `aruco-unavailable` |
 | SIFT | 当前 OpenCV 没有 SIFT。`sift_available()` 为 false，`method` 为 `SIFT-unavailable`。ORB 仍可用 |
 | 一维码 | OpenCV 条码模块和 zbar 都没有时，`barcode_available()` 为 false，返回空列表。有 zbar 时作为 OpenCV 解不出之后的后备 |
-| OCR | 未编 Tesseract（`-DCVTER_WITH_TESSERACT`）或加载不了 `eng`。`backend` 为 `none` |
+| OCR | 未编 Tesseract（`-DCVTER_WITH_TESSERACT`）或加载不了 `eng`。`ocr_available()` 为 false，`recognize_text` 的 `backend` 为 `none` |
 | 螺母实图用例 | 样图不在仓库里。卡尺算法本身在，对应用例跳过 |
+
+### 本机 Windows pytrt 探测（`build-win2022/pytrt/cvter.pyd`）
+
+对应当前这份完整扩展实测（仍以运行时 `cvter.*_available()` 为准）：
+
+| 探测 | 值 | 说明 |
+|---|---|---|
+| `sift_available()` | True | SIFT 可用 |
+| `aruco_available()` | False | Aruco 后端未编进；ChArUco / ArUco / AprilTag 等会失败 |
+| `barcode_available()` | False | 条码后端未编进；`decode_barcode` 多半空列表 |
+| `ocr_available()` | False | OCR 后端未编进；`recognize_text` 的 `backend` 为 `none` |
 
 ## 未实现
 
