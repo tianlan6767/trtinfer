@@ -171,6 +171,8 @@ void bindTrad(py::module_& m)
         .def_readwrite("usePolarity", &template_matching::MatcherParam::usePolarity)
         .def_readwrite("greediness", &template_matching::MatcherParam::greediness)
         .def_readwrite("oriBins", &template_matching::MatcherParam::oriBins)
+        .def_readwrite("borderOverhangFrac", &template_matching::MatcherParam::borderOverhangFrac)
+        .def_readwrite("borderRefineRadMin", &template_matching::MatcherParam::borderRefineRadMin)
         .def_readwrite("minScale", &template_matching::MatcherParam::minScale)
         .def_readwrite("maxScale", &template_matching::MatcherParam::maxScale)
         .def_readwrite("scaleStep", &template_matching::MatcherParam::scaleStep)
@@ -191,6 +193,8 @@ void bindTrad(py::module_& m)
                 << ", usePolarity: " << (param.usePolarity ? "true" : "false")
                 << ", greediness: " << param.greediness
                 << ", oriBins: " << param.oriBins
+                << ", borderOverhangFrac: " << param.borderOverhangFrac
+                << ", borderRefineRadMin: " << param.borderRefineRadMin
                 << ", minScale: " << param.minScale
                 << ", maxScale: " << param.maxScale
                 << ", scaleStep: " << param.scaleStep

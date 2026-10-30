@@ -89,6 +89,15 @@ namespace template_matching
 		// 内部环带用浮点分再挑一个峰，第一层位置窗是 ±4 px，中间层先留到末层再比分。普通内部种子 ±4 已过阈值就不再扩到 ±10。和贴边重叠时留下贴边。末层仍用浮点余弦。
 		int oriBins = 0;
 
+		// 贴边精修：竖直方向模板 AABB 允许出界 = borderOverhangFrac * (templH/2)，按层缩放。
+		// 默认 0.22 ≈ 旧硬编码 20px/(183/2)，保留 batch1/233 底缘。只夹上下，不夹左右（T10/T11）。
+		// <=0 关闭竖直出界投影。
+		double borderOverhangFrac = 0.22;
+
+		// 贴边精修深层（layer>1）位置窗下限（该层像素）。0=自动 max(2, 8>>layer)，
+		// 保证出界投影后仍够走到典型峰；>0 则用该固定下限。
+		int borderRefineRadMin = 0;
+
 		// 尺度搜索（相对模板）。minScale=maxScale=1 时只搜原尺度，与旧行为一致。
 		double minScale = 1.0;
 		double maxScale = 1.0;
