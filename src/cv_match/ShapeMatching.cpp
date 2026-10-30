@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <unordered_map>
 #include <omp.h>
 #include <opencv2/imgproc.hpp>
@@ -10,6 +12,43 @@ namespace template_matching
 {
 namespace
 {
+
+struct ShapeFindProfile
+{
+	bool on = false;
+	double pyr = 0;
+	double grad = 0;
+	double resp = 0;
+	double coarse = 0;
+	double coarse_border_cpu = 0;
+	double coarse_map_cpu = 0;
+	double post_coarse = 0;
+	double refine_top1 = 0;
+	double refine_mid = 0;
+	double refine_full = 0;
+	double finalize = 0;
+	double total = 0;
+};
+
+inline bool shapeProfileEnabled()
+{
+	const char* e = std::getenv("SHAPE_PROFILE");
+	return e != nullptr && e[0] != '\0' && e[0] != '0';
+}
+
+inline void dumpShapeFindProfile(const ShapeFindProfile& p)
+{
+	if (!p.on)
+		return;
+	std::fprintf(stderr,
+				 "SHAPE_PROFILE ms pyr=%.2f grad=%.2f resp=%.2f coarse_wall=%.2f "
+				 "coarse_border_cpu=%.2f coarse_map_cpu=%.2f post_coarse=%.2f "
+				 "refine_top1=%.2f refine_mid=%.2f refine_full=%.2f finalize=%.2f total=%.2f\n",
+				 p.pyr * 1e3, p.grad * 1e3, p.resp * 1e3, p.coarse * 1e3,
+				 p.coarse_border_cpu * 1e3, p.coarse_map_cpu * 1e3, p.post_coarse * 1e3,
+				 p.refine_top1 * 1e3, p.refine_mid * 1e3, p.refine_full * 1e3,
+				 p.finalize * 1e3, p.total * 1e3);
+}
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kD2R = kPi / 180.0;
@@ -72,7 +111,7 @@ double angleStepDeg(const std::vector<ShapeEdgePt>& edges)
 
 // packedXY 不为空时，顺手把单位法向收成一对。打分时每个模型点只碰一块内存。
 // 幅值仍单独放着：最细一层的象限权重要用它，不能改计算顺序。
-// 每个像素独立，行间并行不改 std::hypot 的结果。原图大约 1288×964 时这一步原来是串行的十多毫秒，
+// 每个像素独立，行间并行。幅值用 sqrt(gx^2+gy^2)，不再走 hypot。原图大约 1288×964 时串行曾是十多毫秒，
 // 粗搜和精修已经并行，核更多时它在整段 find 里的占比更高。模板和顶层小图继续单线程。
 struct UnitGradTmp
 {
@@ -89,9 +128,10 @@ void fillUnitGradRow(int y, const cv::Mat& gx, const cv::Mat& gy, cv::Mat& nx, c
 	float* pny = ny.ptr<float>(y);
 	float* pm = mag.ptr<float>(y);
 	cv::Vec2f* pack = packedXY ? packedXY->ptr<cv::Vec2f>(y) : nullptr;
+	// hypot 在 Sobel 量级上偏慢；gx^2+gy^2 再 sqrtf 与单位法向门槛 1e-3 同阶，省掉 grad 大头。
 	for (int x = 0; x < gx.cols; ++x)
 	{
-		const float m = std::hypot(px[x], py[x]);
+		const float m = std::sqrt(px[x] * px[x] + py[x] * py[x]);
 		pm[x] = m;
 		if (m > 1e-3f)
 		{
@@ -1473,6 +1513,10 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	if (stopLayer > top)
 		stopLayer = top;
 
+	ShapeFindProfile prof;
+	prof.on = shapeProfileEnabled();
+	const double tMatch0 = prof.on ? omp_get_wtime() : 0.0;
+
 	// 同一线程上反复 find 时复用金字塔和梯度的存储。每次新建四张原图浮点图都会重新缺页，
 	// 和 hypot 本身差不多。尺寸变了，create / pyrDown 会自己换缓冲。
 	struct MatchImgScratch
@@ -1481,7 +1525,10 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	};
 	thread_local MatchImgScratch imgScratch;
 	std::vector<cv::Mat>& pyr = imgScratch.pyr;
+	double t0 = prof.on ? omp_get_wtime() : 0.0;
 	cv::buildPyramid(gray, pyr, top);
+	if (prof.on)
+		prof.pyr = omp_get_wtime() - t0;
 	imgScratch.nx.resize(pyr.size());
 	imgScratch.ny.resize(pyr.size());
 	imgScratch.mag.resize(pyr.size());
@@ -1490,8 +1537,11 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	std::vector<cv::Mat>& ny = imgScratch.ny;
 	std::vector<cv::Mat>& mag = imgScratch.mag;
 	std::vector<cv::Mat>& packed = imgScratch.packed;
+	t0 = prof.on ? omp_get_wtime() : 0.0;
 	for (int i = 0; i < (int)pyr.size(); ++i)
 		computeUnitGrad(pyr[i], nx[i], ny[i], mag[i], &packed[i]);
+	if (prof.on)
+		prof.grad = omp_get_wtime() - t0;
 	const bool quantCoarse = matchParam_.oriBins == 16;
 	const bool polarity = matchParam_.usePolarity;
 	// 下标 2 上扩散 3、步长 4，中心误差不超过 2px，下一层 ±4 接得住。
@@ -1511,8 +1561,11 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			mapStride >>= 1;
 	}
 	OriResponse16 respTop;
+	t0 = prof.on ? omp_get_wtime() : 0.0;
 	if (quantCoarse)
 		buildOriResponse16(nx[top], ny[top], mag[top], 6.f, polarity, mapSpread, respTop);
+	if (prof.on)
+		prof.resp = omp_get_wtime() - t0;
 
 	const ShapeLayer& topModel = layers_[top];
 	double angStep = angleStepDeg(topModel.edges);
@@ -1549,6 +1602,7 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	const double greed = matchParam_.greediness;
 
 	std::vector<ShapeCandidate> coarse;
+	t0 = prof.on ? omp_get_wtime() : 0.0;
 	if (!scaleSearch_)
 	{
 		// 每个角度写自己的桶，再按角度下标拼起来。critical 按线程完成顺序拼接，同分平台的种子会变。
@@ -1574,11 +1628,35 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 						onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, margin, borderBand);
 					if (quantCoarse && !border && !interiorAngle)
 						continue;
-					const double sc = (quantCoarse && !border)
-						? scorePoseMap(mapPts, respTop, x, y, greed, abortMinScore(coarseTh, -1.0, greed))
-						: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
-									x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed), false, 1,
-									&packed[top]);
+					double sc = 0.0;
+					if (prof.on)
+					{
+						const double ts = omp_get_wtime();
+						sc = (quantCoarse && !border)
+							? scorePoseMap(mapPts, respTop, x, y, greed, abortMinScore(coarseTh, -1.0, greed))
+							: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
+										x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed), false, 1,
+										&packed[top]);
+						const double dt = omp_get_wtime() - ts;
+						if (quantCoarse && !border)
+						{
+#pragma omp atomic
+							prof.coarse_map_cpu += dt;
+						}
+						else
+						{
+#pragma omp atomic
+							prof.coarse_border_cpu += dt;
+						}
+					}
+					else
+					{
+						sc = (quantCoarse && !border)
+							? scorePoseMap(mapPts, respTop, x, y, greed, abortMinScore(coarseTh, -1.0, greed))
+							: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
+										x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed), false, 1,
+										&packed[top]);
+					}
 					if (sc < coarseTh)
 						continue;
 					ShapeCandidate c;
@@ -1627,11 +1705,35 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 						onCoarseBorder(x, y, pyr[top].rows, pyr[top].cols, mgn, borderBand);
 					if (quantCoarse && !border && !interiorAngle)
 						continue;
-					const double sc = (quantCoarse && !border)
-						? scorePoseMap(mapPts, respTop, x, y, greed, abortMinScore(coarseTh, -1.0, greed))
-						: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
-									x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed), false, 1,
-									&packed[top]);
+					double sc = 0.0;
+					if (prof.on)
+					{
+						const double ts = omp_get_wtime();
+						sc = (quantCoarse && !border)
+							? scorePoseMap(mapPts, respTop, x, y, greed, abortMinScore(coarseTh, -1.0, greed))
+							: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
+										x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed), false, 1,
+										&packed[top]);
+						const double dt = omp_get_wtime() - ts;
+						if (quantCoarse && !border)
+						{
+#pragma omp atomic
+							prof.coarse_map_cpu += dt;
+						}
+						else
+						{
+#pragma omp atomic
+							prof.coarse_border_cpu += dt;
+						}
+					}
+					else
+					{
+						sc = (quantCoarse && !border)
+							? scorePoseMap(mapPts, respTop, x, y, greed, abortMinScore(coarseTh, -1.0, greed))
+							: scorePose(model, nx[top], ny[top], mag[top], (float)matchParam_.edgeMinMag,
+										x, y, polarity, greed, abortMinScore(coarseTh, -1.0, greed), false, 1,
+										&packed[top]);
+					}
 					if (sc < coarseTh)
 						continue;
 					ShapeCandidate c;
@@ -1650,6 +1752,9 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			coarse.insert(coarse.end(), b.begin(), b.end());
 	}
 
+	if (prof.on)
+		prof.coarse = omp_get_wtime() - t0;
+	t0 = prof.on ? omp_get_wtime() : 0.0;
 	const double topSpan = std::min((double)std::min(tw, th), 2.0 * (double)maxR);
 	const double minDistTop = 0.45 * std::max(4.0, topSpan);
 	if (quantCoarse)
@@ -1770,8 +1875,11 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			refined.insert(refined.end(), border.begin(), border.end());
 		}
 	}
+	if (prof.on)
+		prof.post_coarse = omp_get_wtime() - t0;
 	for (int layer = top - 1; layer >= stopLayer; --layer)
 	{
+		const double tLayer0 = prof.on ? omp_get_wtime() : 0.0;
 		std::vector<ShapeCandidate> next;
 		const auto& mdl = layers_[layer];
 		double step = angleStepDeg(mdl.edges);
@@ -2225,8 +2333,19 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		else
 			nmsCandidates(next, md, refineKeepCount(matchParam_.maxCount, false));
 		refined.swap(next);
+		if (prof.on)
+		{
+			const double dt = omp_get_wtime() - tLayer0;
+			if (layer == top - 1)
+				prof.refine_top1 += dt;
+			else if (layer == stopLayer)
+				prof.refine_full += dt;
+			else
+				prof.refine_mid += dt;
+		}
 	}
 
+	t0 = prof.on ? omp_get_wtime() : 0.0;
 	const double fullSpan = std::min((double)std::min(layers_[stopLayer].width, layers_[stopLayer].height),
 									 2.0 * (double)modelRadius(layers_[stopLayer].edges));
 	const double fullDist = 0.45 * std::max(4.0, fullSpan);
@@ -2247,6 +2366,12 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 		}
 		BaseMatcher::suppressMatchOverlap(packed, matchParam_.iouThreshold, matchParam_.maxCount, true);
 		matchResults.swap(packed);
+		if (prof.on)
+		{
+			prof.finalize = omp_get_wtime() - t0;
+			prof.total = omp_get_wtime() - tMatch0;
+			dumpShapeFindProfile(prof);
+		}
 		return (int)matchResults.size();
 	}
 
@@ -2302,6 +2427,12 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 	matchResults.reserve(borderHits.size() + keptInterior.size());
 	matchResults.insert(matchResults.end(), borderHits.begin(), borderHits.end());
 	matchResults.insert(matchResults.end(), keptInterior.begin(), keptInterior.end());
+	if (prof.on)
+	{
+		prof.finalize = omp_get_wtime() - t0;
+		prof.total = omp_get_wtime() - tMatch0;
+		dumpShapeFindProfile(prof);
+	}
 	return (int)matchResults.size();
 }
 
