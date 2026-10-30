@@ -2096,6 +2096,17 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			int nPeaks = 0;
 			auto consider = [&](const std::vector<ShapeEdgePt>& model, double ang, double cx, double cy,
 								double objScale) {
+				// 只限制「底边」出界。左右贴边残件（T10/T11）出界可到几十 px，四边都夹会把它们抬进图内丢检。
+				// 底缘实例可见点计分会滑到 (317,907)（出界 ~37px）；pr24 真值约 (315,882)，允许约 20 原图像素。
+				if (c0.fromBorder && quantCoarse)
+				{
+					const double scale = 1.0 / (double)(1 << layer);
+					const double halfH = 0.5 * (double)templH_ * scale;
+					const double maxOver = std::max(2.0, 20.0 * scale);
+					const double yMax = (double)(pyr[layer].rows - 1) - halfH + maxOver;
+					if (cy > yMax)
+						cy = yMax;
+				}
 				if (cx < 0 || cy < 0 || cx > pyr[layer].cols - 1 || cy > pyr[layer].rows - 1)
 					return;
 				// 内部只为了保住隔开的几个高分。3px 内要超过那一个峰；名额满了要超过最低的那个。
@@ -2226,6 +2237,9 @@ int ShapeMatcher::match(const cv::Mat& frame, std::vector<MatchResult>& matchRes
 			// 更深的层如果仍用 ±4 个该层像素，只在细层才明显的强边会被扫进来，中心往右漂大约 16px。
 			if (pass == 0 && c0.fromBorder && quantCoarse && layer > 1)
 				rad = std::min(rad, std::max(1, 8 >> layer));
+			// 底缘出界投影把种子先拉回 yMax 后，顶层仍可能只剩 ±1；至少 ±2 才能从投影点走到 pr24 附近。
+			if (pass == 0 && c0.fromBorder && quantCoarse && layer > 1)
+				rad = std::max(rad, 2);
 			const int posStep = interiorFirst ? 2 : 1;
 			if (!scaleSearch_)
 			{
